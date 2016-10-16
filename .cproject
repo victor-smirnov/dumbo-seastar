@@ -21,12 +21,30 @@
 							<builder id="org.eclipse.cdt.build.core.settings.default.builder.1502955067" keepEnvironmentInBuildfile="false" managedBuildOn="false" name="Gnu Make Builder" superClass="org.eclipse.cdt.build.core.settings.default.builder"/>
 							<tool id="org.eclipse.cdt.build.core.settings.holder.libs.779234828" name="holder for library settings" superClass="org.eclipse.cdt.build.core.settings.holder.libs"/>
 							<tool id="org.eclipse.cdt.build.core.settings.holder.1877705307" name="Assembly" superClass="org.eclipse.cdt.build.core.settings.holder">
+								<option id="org.eclipse.cdt.build.core.settings.holder.incpaths.1881509321" superClass="org.eclipse.cdt.build.core.settings.holder.incpaths" valueType="includePath">
+									<listOptionValue builtIn="false" value="&quot;${CXX_INCLUDES}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${GENERIC_INCLUDES}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/dumbo/seastar}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/dumbo/memoria/include}&quot;"/>
+								</option>
 								<inputType id="org.eclipse.cdt.build.core.settings.holder.inType.1704459958" languageId="org.eclipse.cdt.core.assembly" languageName="Assembly" sourceContentType="org.eclipse.cdt.core.asmSource" superClass="org.eclipse.cdt.build.core.settings.holder.inType"/>
 							</tool>
 							<tool id="org.eclipse.cdt.build.core.settings.holder.1027208250" name="GNU C++" superClass="org.eclipse.cdt.build.core.settings.holder">
+								<option id="org.eclipse.cdt.build.core.settings.holder.incpaths.1687758966" superClass="org.eclipse.cdt.build.core.settings.holder.incpaths" valueType="includePath">
+									<listOptionValue builtIn="false" value="&quot;${CXX_INCLUDES}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${GENERIC_INCLUDES}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/dumbo/seastar}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/dumbo/memoria/include}&quot;"/>
+								</option>
 								<inputType id="org.eclipse.cdt.build.core.settings.holder.inType.741452820" languageId="org.eclipse.cdt.core.g++" languageName="GNU C++" sourceContentType="org.eclipse.cdt.core.cxxSource,org.eclipse.cdt.core.cxxHeader" superClass="org.eclipse.cdt.build.core.settings.holder.inType"/>
 							</tool>
 							<tool id="org.eclipse.cdt.build.core.settings.holder.561939454" name="GNU C" superClass="org.eclipse.cdt.build.core.settings.holder">
+								<option id="org.eclipse.cdt.build.core.settings.holder.incpaths.1855490564" superClass="org.eclipse.cdt.build.core.settings.holder.incpaths" valueType="includePath">
+									<listOptionValue builtIn="false" value="&quot;${CXX_INCLUDES}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${GENERIC_INCLUDES}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/dumbo/seastar}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/dumbo/memoria/include}&quot;"/>
+								</option>
 								<inputType id="org.eclipse.cdt.build.core.settings.holder.inType.369272258" languageId="org.eclipse.cdt.core.gcc" languageName="GNU C" sourceContentType="org.eclipse.cdt.core.cSource,org.eclipse.cdt.core.cHeader" superClass="org.eclipse.cdt.build.core.settings.holder.inType"/>
 							</tool>
 						</toolChain>
@@ -46,4 +64,6 @@
 		</scannerConfigBuildInfo>
 	</storageModule>
 	<storageModule moduleId="org.eclipse.cdt.core.LanguageSettingsProviders"/>
+	<storageModule moduleId="refreshScope"/>
+	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
 </cproject>
