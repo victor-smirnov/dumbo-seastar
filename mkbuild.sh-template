@@ -1,4 +1,11 @@
-#!/bin/bash
+git submodule init
+git submodule update
+
+cd seastar 
+git submodule init
+git submodule update
+
+cd ..
 
 cd memoria
 
@@ -21,7 +28,9 @@ cmake -G "Unix Makefiles" \
     -DBUILD_EXAMPLES=false \
     ..
 
-cd ../../build
+cd ../..
+mkdir -p build 
+cd build
 
 cmake -G "Unix Makefiles" \
     -DCMAKE_BUILD_TYPE=Release \
