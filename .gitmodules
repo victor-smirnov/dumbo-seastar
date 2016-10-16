@@ -1,0 +1,6 @@
+[submodule "seastar"]
+	path = seastar
+	url = git@github.com:victor-smirnov/seastar.git
+[submodule "memoria"]
+	path = memoria
+	url = git@bitbucket.org:vsmirnov/memoria.git
