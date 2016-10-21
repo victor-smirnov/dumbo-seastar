@@ -33,7 +33,9 @@ class RecursiveMutex {
 public:
 	RecursiveMutex(): owner_(free_marker_){}
 
-	void lock()
+	void lock() {}
+
+	void lock1()
 	{
 		auto current_id = std::this_thread::get_id();
 
@@ -58,7 +60,9 @@ public:
 		locks++;
 	}
 
-	bool try_lock()
+	bool try_lock() {return true;}
+
+	bool try_lock1()
 	{
 		auto current_id = std::this_thread::get_id();
 
@@ -71,8 +75,9 @@ public:
 		return false;
 	}
 
+	void unlock() {}
 
-	void unlock()
+	void unlock1()
 	{
 	    if(--locks == 0)
 	    {

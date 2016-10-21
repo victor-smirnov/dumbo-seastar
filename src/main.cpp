@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <dumbo/v1/allocators/inmem/factory.hpp>
+#include <dumbo/v1/tools/dumbo_iostreams.hpp>
+#include <dumbo/v1/tools/aio_uuid.hpp>
+#include <dumbo/v1/tools/aio_string.hpp>
+
 #include <memoria/v1/memoria.hpp>
 #include <memoria/v1/containers/set/set_factory.hpp>
 #include <memoria/v1/core/tools/iobuffer/io_buffer.hpp>
@@ -25,38 +30,52 @@
 
 #include "core/app-template.hh"
 #include "core/sleep.hh"
-
-#include <dumbo/v1/tools/recursive_mutex.hpp>
+#include "core/fstream.hh"
+#include "core/shared_ptr.hh"
+#include "core/thread.hh"
 
 #include <algorithm>
 #include <vector>
 #include <type_traits>
 #include <iostream>
+#include <thread>
 
 using namespace memoria::v1;
+using namespace dumbo::v1;
 
+namespace ss = seastar;
 
 int main(int argc, char** argv)
 {
 	MEMORIA_INIT(DefaultProfile<>);
 
-	app_template app;
-	app.run(argc, argv, [] {
-			std::cout << "Sleeping... " << std::flush;
-			using namespace std::chrono_literals;
-			return sleep(1s).then([] {
-				auto alloc = PersistentInMemAllocator<>::create();
+	using Key = BigInt;
+	DInit<Set<Key>>();
+
+	try {
+		app_template app;
+		app.run(argc, argv, [&] {
+			return ss::async([&] {
+				auto alloc = SeastarInMemAllocator<>::create();
 				auto snp = alloc->master()->branch();
+
+				auto map = create<Set<Key>>(snp);
+
+				for (int c = 0; c < 10000; c++)
+				{
+					map->insert_key(c);
+				}
 
 				snp->commit();
 
-				// Store binary contents of allocator to the file.
-				auto out = FileOutputStreamHandler::create("dumbo.dump");
-				alloc->store(out.get());
-
-				std::cout << "Done.\n";
+				alloc->store("dumbo-data.dump");
 			});
-	});
+		});
+	}
+	catch(std::runtime_error &e) {
+		std::cerr << "Couldn't start application: " << e.what() << "\n";
+		return 1;
+	}
 }
 
 
