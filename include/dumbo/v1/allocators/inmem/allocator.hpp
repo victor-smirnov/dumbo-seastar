@@ -34,7 +34,13 @@
 #include <memoria/v1/core/tools/pair.hpp>
 #include <memoria/v1/core/tools/latch.hpp>
 
-#include <malloc.h>
+#include "core/fstream.hh"
+#include "core/shared_ptr.hh"
+#include "core/sleep.hh"
+
+#include <boost/range.hpp>
+
+
 #include <memory>
 #include <limits>
 #include <string>
@@ -42,10 +48,7 @@
 #include <unordered_set>
 #include <mutex>
 
-#include "core/fstream.hh"
-#include "core/shared_ptr.hh"
-#include "core/sleep.hh"
-
+#include <malloc.h>
 
 namespace dumbo {
 namespace v1 {
@@ -166,7 +169,22 @@ struct AIOWriterAdapter<PersistentTreeValue<V, T>> {
 	}
 };
 
-
+template <typename V, typename T>
+struct AIOReaderAdapter<PersistentTreeValue<V, T>> {
+	template <typename ISA>
+	static auto process(ISA&& isa)
+	{
+		return do_with(PersistentTreeValue<V, T>(), [isa](auto& tree_value) {
+			return read<V>(isa).then([&, isa](auto vv) {
+				tree_value.page_ptr() = vv;
+				return read<T>(isa).then([&](auto txn_id) {
+					tree_value.txn_id() = txn_id;
+					return make_ready_future<PersistentTreeValue<V, T>>(std::move(tree_value));
+				});
+			});
+		});
+	}
+};
 
 
 
@@ -907,17 +925,23 @@ public:
 
     static std::shared_ptr<MyType> load(const char* file)
     {
-        auto fileh = FileInputStreamHandler::create(file);
-        return load(fileh.get());
+    	auto ff = open_file_dma(file, open_flags::ro).get0();
+
+    	auto stream = ::dumbo::v1::read(ff);
+    	auto ptr = load(stream);
+
+    	stream->close().get();
+
+    	return ptr;
     }
 
-    static std::shared_ptr<MyType> load(InputStreamHandler *input)
+    static std::shared_ptr<MyType> load(TypedAsyncInputStreamPtr input)
     {
         MyType* allocator = new MyType(0);
 
         char signature[12];
 
-        input->read(signature, sizeof(signature));
+        input->read(signature, sizeof(signature)).get();
 
         if (!(
                 signature[0] == 'M' &&
@@ -958,18 +982,18 @@ public:
         while (proceed)
         {
             UByte type;
-            *input >> type;
+            (input >> type).get();
 
             switch (type)
             {
-                case TYPE_METADATA:     allocator->read_metadata(*input, metadata); break;
-                case TYPE_DATA_PAGE:    allocator->read_data_page(*input, page_map); break;
-                case TYPE_LEAF_NODE:    allocator->read_leaf_node(*input, ptree_node_map); break;
-                case TYPE_BRANCH_NODE:  allocator->read_branch_node(*input, ptree_node_map); break;
-                case TYPE_HISTORY_NODE: allocator->read_history_node(*input, history_node_map); break;
-                case TYPE_CHECKSUM:     allocator->read_checksum(*input, checksum); proceed = false; break;
+                case TYPE_METADATA:     allocator->read_metadata(input, metadata); break;
+                case TYPE_DATA_PAGE:    allocator->read_data_page(input, page_map); break;
+                case TYPE_LEAF_NODE:    allocator->read_leaf_node(input, ptree_node_map); break;
+                case TYPE_BRANCH_NODE:  allocator->read_branch_node(input, ptree_node_map); break;
+                case TYPE_HISTORY_NODE: allocator->read_history_node(input, history_node_map); break;
+                case TYPE_CHECKSUM:     allocator->read_checksum(input, checksum); proceed = false; break;
                 default:
-                    throw Exception(MA_SRC, SBuf()<<"Unknown record type: "<<(Int)type);
+                    throw Exception(MA_SRC, SBuf() << "Unknown record type: " << (Int)type);
             }
 
             allocator->records_++;
@@ -1255,158 +1279,140 @@ private:
         }
     }
 
-    void read_metadata(InputStreamHandler& in, AllocatorMetadata& metadata)
+    void read_metadata(TypedAsyncInputStreamPtr in, AllocatorMetadata& metadata)
     {
-        in >> metadata.master();
-        in >> metadata.root();
-
-        BigInt size;
-
-        in >>size;
-
-        for (BigInt c = 0; c < size; c++)
-        {
-            String name;
-            in >> name;
-
-            TxnId value;
-            in >> value;
-
-            metadata.named_branches()[name] = value;
-        }
+    	ready(in >> metadata.master()
+           >> metadata.root()).then([=, &metadata] {
+        	return read<BigInt>(in).then([=, &metadata](auto size) {
+        		return do_with(boost::irange((BigInt)0, (BigInt)size, (BigInt)1), [&](auto& range) {
+        			return do_for_each(range, [=, &metadata](auto idx) {
+        				return read<String>(in).then([=, &metadata](auto name) {
+        					return read<TxnId>(in).then([=, &metadata, name = std::move(name)](auto value) {
+        						metadata.named_branches()[name] = value;
+        						return ::now();
+        					});
+        				});
+        			});
+        		});
+        	});
+        }).get();
     }
 
-    void read_checksum(InputStreamHandler& in, Checksum& checksum)
+    void read_checksum(TypedAsyncInputStreamPtr in, Checksum& checksum)
     {
-        in >> checksum.records();
+        (in >> checksum.records()).get();
     }
 
-    void read_data_page(InputStreamHandler& in, PageMap& map)
+    void read_data_page(TypedAsyncInputStreamPtr in, PageMap& map)
     {
-    	typename RCPagePtr::RefCntT references;
+        read<typename RCPagePtr::RefCntT>(in).then([=, &map](auto references){
+        	return read<Int>(in).then([=, &map](auto page_data_size) {
+        		return read<Int>(in).then([=, &map](auto page_size) {
+        			return read<Int>(in).then([=, &map](auto ctr_hash) {
+        				return read<Int>(in).then([=, &map](auto page_hash) {
+        					unique_ptr<Byte, void (*)(void*)> page_data((Byte*)::malloc(page_data_size), ::free);
+        					Page* page = T2T<Page*>(::malloc(page_size));
 
-    	in >> references;
+        					return in->read(page_data.get(), page_data_size).then([=, &map, page_data = std::move(page_data)] {
 
-    	Int page_data_size;
-        in >> page_data_size;
+        						auto pageMetadata = metadata_->getPageMetadata(ctr_hash, page_hash);
+        						pageMetadata->getPageOperations()->deserialize(page_data.get(), page_data_size, T2T<void*>(page));
 
-        Int page_size;
-        in >> page_size;
+        						if (map.find(page->uuid()) == map.end())
+        						{
+        							map[page->uuid()] = new RCPagePtr(page, references);
+        						}
+        						else {
+        							throw Exception(MA_SRC, SBuf() << "Page " << page->uuid() << " was already registered");
+        						}
 
-        Int ctr_hash;
-        in >> ctr_hash;
-
-        Int page_hash;
-        in >> page_hash;
-
-        unique_ptr<Byte, void (*)(void*)> page_data((Byte*)::malloc(page_data_size), ::free);
-
-        Page* page = T2T<Page*>(::malloc(page_size));
-
-        in.read(page_data.get(), 0, page_data_size);
-
-        auto pageMetadata = metadata_->getPageMetadata(ctr_hash, page_hash);
-        pageMetadata->getPageOperations()->deserialize(page_data.get(), page_data_size, T2T<void*>(page));
-
-        if (map.find(page->uuid()) == map.end())
-        {
-            map[page->uuid()] = new RCPagePtr(page, references);
-        }
-        else {
-            throw Exception(MA_SRC, SBuf() << "Page " << page->uuid() << " was already registered");
-        }
+        						return ::now();
+        					});
+        				});
+        			});
+        		});
+        	});
+        }).get();
     }
 
 
-    void read_leaf_node(InputStreamHandler& in, PersistentTreeNodeMap& map)
+    void read_leaf_node(TypedAsyncInputStreamPtr in, PersistentTreeNodeMap& map)
     {
         LeafNodeBufferT* buffer = new LeafNodeBufferT();
 
-        buffer->read(in);
+        buffer->read(in).then([=, &map]{
+        	if (map.find(buffer->node_id()) == map.end())
+        	{
+        		NodeBaseT* node = new LeafNodeT();
+        		node->populate_as_buffer(buffer);
 
-        if (map.find(buffer->node_id()) == map.end())
-        {
-            NodeBaseT* node = new LeafNodeT();
-            node->populate_as_buffer(buffer);
-
-            map[buffer->node_id()] = std::make_pair(buffer, node);
-        }
-        else {
-            throw Exception(MA_SRC, SBuf() << "PersistentTree LeafNode " << buffer->node_id() << " was already registered");
-        }
+        		map[buffer->node_id()] = std::make_pair(buffer, node);
+        	}
+        	else {
+        		throw Exception(MA_SRC, SBuf() << "PersistentTree LeafNode " << buffer->node_id() << " was already registered");
+        	}
+        }).get();
     }
 
 
-    void read_branch_node(InputStreamHandler& in, PersistentTreeNodeMap& map)
+    void read_branch_node(TypedAsyncInputStreamPtr in, PersistentTreeNodeMap& map)
     {
         BranchNodeBufferT* buffer = new BranchNodeBufferT();
 
-        buffer->read(in);
+        buffer->read(in).then([=, &map]{
+        	if (map.find(buffer->node_id()) == map.end())
+        	{
+        		NodeBaseT* node = new BranchNodeT();
+        		node->populate_as_buffer(buffer);
 
-        if (map.find(buffer->node_id()) == map.end())
-        {
-            NodeBaseT* node = new BranchNodeT();
-            node->populate_as_buffer(buffer);
-
-            map[buffer->node_id()] = std::make_pair(buffer, node);
-        }
-        else {
-            throw Exception(MA_SRC, SBuf() << "PersistentTree BranchNode " << buffer->node_id() << " was already registered");
-        }
+        		map[buffer->node_id()] = std::make_pair(buffer, node);
+        	}
+        	else {
+        		throw Exception(MA_SRC, SBuf() << "PersistentTree BranchNode " << buffer->node_id() << " was already registered");
+        	}
+        }).get();
     }
 
 
 
 
-    void read_history_node(InputStreamHandler& in, HistoryTreeNodeMap& map)
+    void read_history_node(TypedAsyncInputStreamPtr in, HistoryTreeNodeMap& map)
     {
         HistoryNodeBuffer* node = new HistoryNodeBuffer();
 
         Int status;
-
-        in >> status;
-
-        node->status() = static_cast<typename HistoryNode::Status>(status);
-
-        in >> node->txn_id();
-        in >> node->root();
-        in >> node->root_id();
-
-        in >> node->parent();
-
-        in >> node->metadata();
-
         BigInt children;
-        in >>children;
 
-        for (BigInt c = 0; c < children; c++)
-        {
-            TxnId child_txn_id;
-            in >> child_txn_id;
+        ready(in >> status
+        	>> node->txn_id()
+			>> node->root()
+        	>> node->root_id()
+			>> node->parent()
+			>> node->metadata()
+			>> children
+		).then([&, children]{
+			node->status() = static_cast<typename HistoryNode::Status>(status);
 
-            node->children().push_back(child_txn_id);
-        }
+			BigInt lchildren = children;
 
-        if (map.find(node->txn_id()) == map.end())
-        {
-            map[node->txn_id()] = node;
-        }
-        else {
-            throw Exception(MA_SRC, SBuf() << "HistoryTree Node " << node->txn_id() << " was already registered");
-        }
+			return do_with(boost::irange((BigInt)0, (BigInt)lchildren, (BigInt)1), [=, &map](auto& range) {
+				return do_for_each(range, [=, &map](auto idx) {
+					return read<TxnId>(in).then([=, &map](const auto& child_txn_id) {
+						node->children().push_back(child_txn_id);
+						return ::now();
+					});
+				});
+			});
+		}).then([=, &map]{
+			if (map.find(node->txn_id()) == map.end())
+			{
+				map[node->txn_id()] = node;
+			}
+			else {
+				throw Exception(MA_SRC, SBuf() << "HistoryTree Node " << node->txn_id() << " was already registered");
+			}
+		}).get();
     }
-
-
-
-
-//    void update_leaf_references(LeafNodeT* node)
-//    {
-//        for (Int c = 0; c < node->size(); c++)
-//        {
-//        	node->data(c)->page_ptr()->raw_data()->references() = node->data(c)->page_ptr()->references();
-//        }
-//    }
-
 
 
     std::unique_ptr<LeafNodeBufferT> to_leaf_buffer(const LeafNodeT* node)

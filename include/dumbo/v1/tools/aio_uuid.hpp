@@ -30,7 +30,19 @@ struct AIOReaderAdapter<mem::UUID> {
 	template <typename ISA>
 	static auto process(ISA&& isa)
 	{
-		do_with(mem::UUID(), [&](auto& uuid){
+		return do_with(mem::UUID(), [isa](auto& uuid){
+//			return read<UBigInt>(isa).then([&, isa](auto hi){
+//				return read<UBigInt>(isa).then([&, isa](auto lo){
+//
+//					cout << "Here \n";
+//
+//					uuid.hi() = hi;
+//					uuid.lo() = lo;
+//
+//					return make_ready_future<mem::UUID>(uuid);
+//				});
+//			});
+
 			return ready(isa >> uuid.hi() >> uuid.lo()).then([&](){
 				return make_ready_future<mem::UUID>(uuid);
 			});

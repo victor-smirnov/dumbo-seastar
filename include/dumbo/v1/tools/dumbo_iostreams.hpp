@@ -21,7 +21,8 @@
 #include "core/sstring.hh"
 
 #include <memoria/v1/core/types/type2type.hpp>
-
+#include <memoria/v1/core/tools/bitmap.hpp>
+#include <memoria/v1/core/tools/type_name.hpp>
 
 #include <memory>
 #include <iostream>
@@ -70,10 +71,11 @@ struct NoOpIOByteOrderConverter: IOByteOrderConverter {
 template <typename T>
 struct AIOReaderAdapter {
 	template <typename ISA>
-	static auto process(ISA&& isa) {
-		return isa.is_.read_exactly(sizeof(T)).then([&](const auto& buf){
+	static auto process(ISA&& isa)
+	{
+		return isa->stream().read_exactly(sizeof(T)).then([isa](const auto& buf) {
 			T value = *T2T<const T*>(buf.get());
-			return make_ready_future<T>(isa.pconverter_->convert(value));
+			return make_ready_future<T>(isa->converter()->convert(value));
 		});
 	}
 };
@@ -84,7 +86,7 @@ struct AIOReaderAdapter<Byte> {
 
 	template <typename ISA>
 	static auto process(ISA&& isa) {
-		return isa.is_.read_exactly(sizeof(T)).then([&](const auto& buf){
+		return isa->stream().read_exactly(sizeof(T)).then([&](const auto& buf){
 			T value = *T2T<const T*>(buf.get());
 			return make_ready_future<T>(value);
 		});
@@ -98,7 +100,7 @@ struct AIOReaderAdapter<UByte> {
 
 	template <typename ISA>
 	static auto process(ISA&& isa) {
-		return isa.is_.read_exactly(sizeof(T)).then([&](const auto& buf){
+		return isa->stream().read_exactly(sizeof(T)).then([&](const auto& buf){
 			T value = *T2T<const T*>(buf.get());
 			return make_ready_future<T>(value);
 		});
@@ -111,7 +113,7 @@ struct AIOReaderAdapter<bool> {
 
 	template <typename ISA>
 	static auto process(ISA&& isa) {
-		return isa.is_.read_exactly(sizeof(T)).then([&](const auto& buf){
+		return isa->is_.read_exactly(sizeof(T)).then([&](const auto& buf){
 			T value = *T2T<const T*>(buf.get());
 			return make_ready_future<T>(value);
 		});
@@ -156,6 +158,9 @@ public:
 	input_stream<char>& stream() {return is_;}
 	const input_stream<char>& stream() const {return is_;}
 
+	IOByteOrderConverter* converter() {return pconverter_;}
+	const IOByteOrderConverter* converter() const {return pconverter_;}
+
 	TypedAsyncInputStream& operator=(const TypedAsyncInputStream&) = delete;
 	TypedAsyncInputStream& operator=(TypedAsyncInputStream&& other)
 	{
@@ -167,27 +172,28 @@ public:
 		return *this;
 	}
 
-	template <typename T>
-	future<T> read() {
-		return AIOReaderAdapter<T>::process(*this);
+	future<> read(void* mem, size_t size)
+	{
+		return is_.read_exactly(size).then([mem](const auto& buf){
+			CopyByteBuffer(buf.get(), mem, buf.size());
+			return ::now();
+		});
+	}
+
+	future<> close() {
+		return is_.close();
 	}
 };
 
 
-template <typename T>
-future<T> read(TypedAsyncInputStream& adaptor) { return adaptor.template read<T>();}
 
-template <typename T>
-future<T> read(TypedAsyncInputStream* adaptor) { return adaptor->template read<T>();}
 
-template <typename T>
-future<T> read(TypedAsyncInputStream&& adaptor) { return adaptor.template read<T>();}
+template <typename T, template <typename> class Ptr>
+future<T> read(const Ptr<TypedAsyncInputStream>& adaptor)
+{
+	return AIOReaderAdapter<T>::process(adaptor);
+}
 
-template <typename T>
-future<T> read(const ::shared_ptr<TypedAsyncInputStream>& adaptor) { return adaptor->template read<T>();}
-
-template <typename T>
-future<T> read(const ::lw_shared_ptr<TypedAsyncInputStream>& adaptor) { return adaptor->template read<T>();}
 
 static inline lw_shared_ptr<TypedAsyncInputStream> read(file f)
 {

@@ -69,6 +69,32 @@ int main(int argc, char** argv)
 				snp->commit();
 
 				alloc->store("dumbo-data.dump");
+
+				std::cout << "Store created\n";
+
+
+				auto alloc1 = SeastarInMemAllocator<>::load("dumbo-data.dump");
+
+				auto snp1 = alloc1->find(snp->uuid());
+
+				auto map1 = snp1->find<Set<Key>>(map->name());
+
+				auto i1 = map->begin();
+
+				while (!i1->isEnd())
+				{
+					std::cout << i1->key() << "\n";
+					i1->next();
+				}
+			}).handle_exception([](auto eptr){
+				try {
+					std::rethrow_exception(eptr);
+				}
+				catch(Exception &e) {
+					std::cerr << "HANDLED: " << e.source() << ": " << e.message() << "\n";
+				}
+
+				return ::now();
 			});
 		});
 	}

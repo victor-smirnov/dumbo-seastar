@@ -23,7 +23,7 @@ endif()
 
 set(CMAKE_MODULE_PATH  "${CMAKE_SOURCE_DIR}/memoria/build/lib")
 
-set(SEASTAR_CFLAGS "-Wno-overloaded-virtual  -DFMT_HEADER_ONLY -DHAVE_XEN -DHAVE_HWLOC -DHAVE_NUMA ${DUMBO_DEBUG_CFLAGS}") #-Wfatal-errors
+set(SEASTAR_CFLAGS "-Wfatal-errors -Wno-overloaded-virtual -DFMT_HEADER_ONLY -DHAVE_XEN -DHAVE_HWLOC -DHAVE_NUMA ${DUMBO_DEBUG_CFLAGS}") #
 set(SEASTAR_LFLAGS "-L${CMAKE_SOURCE_DIR}/seastar/build/${SEASTAR_BUILD_TYPE} -Wl,--whole-archive,-lseastar,--no-whole-archive -g -Wl,--no-as-needed   -fvisibility=hidden -pthread  ")
 
 include(Memoria)

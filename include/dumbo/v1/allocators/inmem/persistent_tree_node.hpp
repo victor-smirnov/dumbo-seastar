@@ -412,31 +412,34 @@ public:
         });
     }
 
-    void read(InputStreamHandler& in)
+    future<> read(TypedAsyncInputStreamPtr in)
     {
-        in >> this->metadata().size();
+    	Int node_type;
+        ready (
+        in >> this->metadata().size()
+           >> node_type
+		   >> node_id_
+		   >> txn_id_
+           >> size_
+		   >> refs_)
+		.then([&, in](){
+        	 this->node_type_ = (NodeType)node_type;
 
-        int node_type;
-        in >> node_type;
+        	 Int last_idx = size_ / NodeIndexSize + (size_ % NodeIndexSize == 0 ? 0 : 1);
+        	 return do_with(boost::irange(0, last_idx, 1), [&](auto& range){
+        		 return do_for_each(range, [&](auto idx){
+        			 return ready(in >> index_[idx]);
+        		 });
+        	 });
+        }).then([&, in]() {
+        	return do_with(boost::irange(0, size_, 1), [&](auto& range){
+        		return do_for_each(range, [&](auto idx){
+        			return ready(in >> keys_[idx]);
+        		});
+        	});
+        }).get();
 
-        this->node_type_ = (NodeType)node_type;
-
-        in >> node_id_;
-        in >> txn_id_;
-        in >> size_;
-
-        in >> refs_;
-
-        Int last_idx = size_ / NodeIndexSize + (size_ % NodeIndexSize == 0 ? 0 : 1);
-        for (Int c = 0; c < last_idx; c++)
-        {
-            in >> index_[c];
-        }
-
-        for (Int c = 0; c < size_; c++)
-        {
-            in >> keys_[c];
-        }
+        return ::now();
     }
 
 
@@ -588,14 +591,15 @@ public:
         });
     }
 
-    void read(InputStreamHandler& in)
+    future<> read(TypedAsyncInputStreamPtr in)
     {
-        Base::read(in);
-
-        for (Int c = 0; c < this->size(); c++)
-        {
-            in >> data_[c];
-        }
+        return Base::read(in).then([&](){
+        	return do_with(boost::irange(0, this->size(), 1), [&](auto& range){
+        		return do_for_each(range, [&, this](auto idx){
+        			return ready(in >> data_[idx]);
+        		});
+        	});
+        });
     }
 };
 
