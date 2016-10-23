@@ -378,9 +378,9 @@ public:
 	}
 };
 
-static inline lw_shared_ptr<TypedAsyncOutputStream> write(file f)
+static inline lw_shared_ptr<TypedAsyncOutputStream> write(const file& f)
 {
-	return ::make_lw_shared<TypedAsyncOutputStream>(::make_file_output_stream(std::move(f)));
+	return ::make_lw_shared<TypedAsyncOutputStream>(::make_file_output_stream(f));
 }
 
 static inline lw_shared_ptr<TypedAsyncOutputStream> write(file&& f)

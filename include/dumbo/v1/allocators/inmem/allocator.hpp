@@ -21,6 +21,8 @@
 #include <dumbo/v1/tools/dumbo_iostreams.hpp>
 #include <dumbo/v1/tools/aio_uuid.hpp>
 #include <dumbo/v1/tools/aio_string.hpp>
+#include <dumbo/v1/tools/sync_file.hpp>
+#include <dumbo/v1/tools/dump_walker.hpp>
 
 #include <dumbo/v1/allocators/inmem/persistent_tree_node.hpp>
 #include <dumbo/v1/allocators/inmem/persistent_tree.hpp>
@@ -917,7 +919,7 @@ public:
 
     void dump(const char* path)
     {
-        using Walker = FSDumpContainerWalker<Page>;
+        using Walker = DumboFSDumpContainerWalker<Page>;
 
         Walker walker(this->getMetadata(), path);
         this->walkContainers(&walker);

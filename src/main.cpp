@@ -56,6 +56,7 @@ int main(int argc, char** argv)
 		app_template app;
 		app.run(argc, argv, [&] {
 			return ss::async([&] {
+
 				auto alloc = SeastarInMemAllocator<>::create();
 				auto snp = alloc->master()->branch();
 
@@ -72,20 +73,21 @@ int main(int argc, char** argv)
 
 				std::cout << "Store created\n";
 
-
 				auto alloc1 = SeastarInMemAllocator<>::load("dumbo-data.dump");
 
-				auto snp1 = alloc1->find(snp->uuid());
+				alloc1->dump("dumbo-dump");
 
-				auto map1 = snp1->find<Set<Key>>(map->name());
-
-				auto i1 = map->begin();
-
-				while (!i1->isEnd())
-				{
-					std::cout << i1->key() << "\n";
-					i1->next();
-				}
+//				auto snp1 = alloc1->find(snp->uuid());
+//
+//				auto map1 = snp1->find<Set<Key>>(map->name());
+//
+//				auto i1 = map->begin();
+//
+//				while (!i1->isEnd())
+//				{
+//					std::cout << i1->key() << "\n";
+//					i1->next();
+//				}
 			}).handle_exception([](auto eptr){
 				try {
 					std::rethrow_exception(eptr);
