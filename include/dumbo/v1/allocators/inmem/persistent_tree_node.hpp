@@ -45,8 +45,8 @@ template <typename Key_, Int NodeSize, Int NodeIndexSize, typename NodeId_, type
 class NodeBase {
 public:
 
-    using TypedAsyncOutputStreamPtr = lw_shared_ptr<TypedAsyncOutputStream>;
-    using TypedAsyncInputStreamPtr 	= lw_shared_ptr<TypedAsyncInputStream>;
+    using TypedAsyncOutputStreamPtr = ::shared_ptr<TypedAsyncOutputStream>;
+    using TypedAsyncInputStreamPtr 	= ::shared_ptr<TypedAsyncInputStream>;
 
 
 	using MutexT = RecursiveMutex;
@@ -396,16 +396,16 @@ public:
 			<< this->txn_id()
 			<< this->size()
 			<< this->references()
-        ).then([&]() {
+        ).then([=] {
         	Int last_idx = size_ / NodeIndexSize + (size_ % NodeIndexSize == 0 ? 0 : 1);
-        	return do_with(boost::irange(0, last_idx, 1), [&](auto& range){
-        		return do_for_each(range, [&](auto idx){
+        	return do_with(boost::irange(0, last_idx, 1), [=](auto range){
+        		return do_for_each(range, [=](auto idx){
         			return ready(out << index_[idx]);
         		});
         	});
-        }).then([&]() {
-        	return do_with(boost::irange(0, size_, 1), [&](auto& range){
-        		return do_for_each(range, [&](auto idx){
+        }).then([=] {
+        	return do_with(boost::irange(0, size_, 1), [=](auto range){
+        		return do_for_each(range, [=](auto idx){
         			return ready(out << keys_[idx]);
         		});
         	});
@@ -422,18 +422,18 @@ public:
 		   >> txn_id_
            >> size_
 		   >> refs_)
-		.then([&, in](){
+		.then([=, &node_type](){
         	 this->node_type_ = (NodeType)node_type;
 
         	 Int last_idx = size_ / NodeIndexSize + (size_ % NodeIndexSize == 0 ? 0 : 1);
-        	 return do_with(boost::irange(0, last_idx, 1), [&](auto& range){
-        		 return do_for_each(range, [&](auto idx){
+        	 return do_with(boost::irange(0, last_idx, 1), [=](auto& range){
+        		 return do_for_each(range, [=](auto idx){
         			 return ready(in >> index_[idx]);
         		 });
         	 });
-        }).then([&, in]() {
-        	return do_with(boost::irange(0, size_, 1), [&](auto& range){
-        		return do_for_each(range, [&](auto idx){
+        }).then([=]() {
+        	return do_with(boost::irange(0, size_, 1), [=](auto& range){
+        		return do_for_each(range, [=](auto idx){
         			return ready(in >> keys_[idx]);
         		});
         	});
@@ -582,9 +582,9 @@ public:
 
     future<> write(const TypedAsyncOutputStreamPtr& out) const
     {
-        return Base::write(out).then([&](){
-        	return do_with(boost::irange(0, this->size(), 1), [&](auto& range){
-        		return do_for_each(range, [&, this](auto idx){
+        return Base::write(out).then([=](){
+        	return do_with(boost::irange(0, this->size(), 1), [=](auto& range){
+        		return do_for_each(range, [=](auto idx){
         			return ready(out << data_[idx]);
         		});
         	});
@@ -593,9 +593,9 @@ public:
 
     future<> read(TypedAsyncInputStreamPtr in)
     {
-        return Base::read(in).then([&](){
-        	return do_with(boost::irange(0, this->size(), 1), [&](auto& range){
-        		return do_for_each(range, [&, this](auto idx){
+        return Base::read(in).then([=](){
+        	return do_with(boost::irange(0, this->size(), 1), [=](auto& range){
+        		return do_for_each(range, [=](auto idx){
         			return ready(in >> data_[idx]);
         		});
         	});

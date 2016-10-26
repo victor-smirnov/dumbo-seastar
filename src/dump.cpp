@@ -113,13 +113,42 @@ int main(int argc, char** argv)
 {
 	MEMORIA_INIT(DefaultProfile<>);
 
+	DInit<Set<BigInt>>();
+
 	if (argc == 2)
 	{
 		DInit<Set<BigInt>>();
-
 		DumpAllocator(argv[1]);
 
 		return 0;
+	}
+	else if (argc == 1)
+	{
+		auto alloc = PersistentInMemAllocator<>::create();
+		auto snp = alloc->master()->branch();
+
+		std::cout << "Here1\n";
+
+		auto map = create<Set<BigInt>>(snp, UUID::parse("b1197537-12eb-4dc7-811b-ee0491720fbc"));
+
+		std::cout << "Here2: " << map.use_count() << " -- " << map->name() << "\n";
+
+		for (int c = 0; c < 100000; c++)
+		{
+//			std::cout << "Insert: " << c << "\n";
+
+			map->insert_key(c);
+		}
+
+		std::cout << "Here3\n";
+
+		snp->commit();
+		snp->set_as_master();
+
+		std::cout << "Here4 \n";
+		alloc->store("dumbo-data1.dump");
+
+		std::cout << "Store created\n";
 	}
 	else {
 		cout << "Usage: dump <allocator-dump-file-name>\n";

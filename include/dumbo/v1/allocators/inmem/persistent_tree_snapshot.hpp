@@ -52,13 +52,15 @@ namespace {
 
 	template <typename CtrT, typename Allocator>
 	class SharedCtr: public CtrT {
-		std::shared_ptr<Allocator> allocator_;
+		dumbo::shared_ptr<Allocator> allocator_;
 
 	public:
-		SharedCtr(const std::shared_ptr<Allocator>& allocator, Int command, const UUID& name):
+		SharedCtr(const dumbo::shared_ptr<Allocator>& allocator, Int command, const UUID& name):
 			CtrT(allocator.get(), command, name),
 			allocator_(allocator)
-	{}
+		{}
+
+		virtual ~SharedCtr() {}
 
 		auto snapshot() const {
 			return allocator_;
@@ -97,7 +99,7 @@ public:
 template <typename Profile, typename PageType, typename HistoryNode, typename PersitentTree, typename HistoryTree>
 class Snapshot:
         public IWalkableAllocator<PageType>,
-        public std::enable_shared_from_this<
+        public dumbo::enable_shared_from_this<
             Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>
         >
 {
@@ -105,7 +107,7 @@ class Snapshot:
     using MyType            = Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>;
 
     using HistoryTreePtr    = std::shared_ptr<HistoryTree>;
-    using SnapshotPtr       = std::shared_ptr<MyType>;
+    using SnapshotPtr       = dumbo::shared_ptr<MyType>;
 
     using NodeBaseT         = typename PersitentTree::NodeBaseT;
     using LeafNodeT         = typename PersitentTree::LeafNodeT;
@@ -137,11 +139,15 @@ class Snapshot:
 
 public:
 
+    template <typename T>
+    using CtrMakeSharedPtr 	= memoria::v1::CtrMakeSharedPtr<Profile, T>;
+
+    template <typename T>
+    using CtrSharedPtr 		= memoria::v1::CtrSharedPtr<Profile, T>;
+
     template <typename CtrName>
     using CtrT = SharedCtr<typename CtrTF<Profile, CtrName>::Type, MyType>;
 
-    template <typename CtrName>
-    using CtrPtr = std::shared_ptr<CtrT<CtrName>>;
 
     using typename Base::Page;
     using typename Base::ID;
@@ -182,7 +188,7 @@ private:
     Properties properties_;
 
     CtrInstanceMap instance_map_;
-    std::shared_ptr<RootMapType> root_map_;
+    CtrSharedPtr<RootMapType> root_map_;
 
 
     ContainerMetadataRepository*  metadata_;
@@ -216,7 +222,7 @@ public:
             ctr_op = CTR_FIND;
         }
 
-        root_map_ = std::make_shared<RootMapType>(this, ctr_op, UUID());
+        root_map_ = CtrMakeSharedPtr<RootMapType>::make_shared(this, ctr_op, UUID());
     }
 
     Snapshot(HistoryNode* history_node, HistoryTree* history_tree):
@@ -240,7 +246,7 @@ public:
             ctr_op = CTR_FIND;
         }
 
-        root_map_ = std::make_shared<RootMapType>(this, ctr_op, UUID());
+        root_map_ = CtrMakeSharedPtr<RootMapType>::make_shared(this, ctr_op, UUID());
     }
 
 //    virtual ~Snapshot()
@@ -483,7 +489,7 @@ public:
 
             history_tree_raw_->snapshot_map_[history_node->txn_id()] = history_node;
 
-            return std::make_shared<Snapshot>(history_node, history_tree_->shared_from_this());
+            return dumbo::make_shared<Snapshot>(history_node, history_tree_->shared_from_this());
         }
         else if (history_node_->is_data_locked())
         {
@@ -512,7 +518,7 @@ public:
         if (history_node_->parent())
         {
             HistoryNode* history_node = history_node_->parent();
-            return std::make_shared<Snapshot>(history_node, history_tree_->shared_from_this());
+            return dumbo::make_shared<Snapshot>(history_node, history_tree_->shared_from_this());
         }
         else
         {
@@ -1057,8 +1063,8 @@ public:
     {
         if (!name.is_null())
         {
-            auto iter = root_map_->find(name);
-            return iter->is_found(name);
+           	auto iter = root_map_->find(name);
+           	return iter->is_found(name);
         }
         else {
             return !history_node_->root_id().is_null();
@@ -1156,28 +1162,34 @@ public:
     auto find_or_create(const UUID& name)
     {
     	checkIfConainersCreationAllowed();
-        return std::make_shared<CtrT<CtrName>>(this->shared_from_this(), CTR_FIND | CTR_CREATE, name);
+        return CtrMakeSharedPtr<CtrT<CtrName>>::make_shared(this->shared_from_this(), CTR_FIND | CTR_CREATE, name);
     }
 
     template <typename CtrName>
     auto create(const UUID& name)
     {
     	checkIfConainersCreationAllowed();
-        return std::make_shared<CtrT<CtrName>>(this->shared_from_this(), CTR_CREATE, name);
+        return CtrMakeSharedPtr<CtrT<CtrName>>::make_shared(this->shared_from_this(), CTR_CREATE, name);
     }
 
     template <typename CtrName>
     auto create()
     {
+//    	std::cout << "Create AACtr1 " << TypeNameFactory<CtrName>::name() << " -- " << "\n";
+
     	checkIfConainersCreationAllowed();
-        return std::make_shared<CtrT<CtrName>>(this->shared_from_this(), CTR_CREATE, CTR_DEFAULT_NAME);
+        auto ptr = CtrMakeSharedPtr<CtrT<CtrName>>::make_shared(this->shared_from_this(), CTR_CREATE, CTR_DEFAULT_NAME);
+
+//        std::cout << "Create AACtr2 " << TypeNameFactory<CtrName>::name() << " -- " << ptr->_count << "\n";
+
+        return ptr;
     }
 
     template <typename CtrName>
     auto find(const UUID& name)
     {
     	checkIfConainersOpeneingAllowed();
-        return std::make_shared<CtrT<CtrName>>(this->shared_from_this(), CTR_FIND, name);
+        return CtrMakeSharedPtr<CtrT<CtrName>>::make_shared(this->shared_from_this(), CTR_FIND, name);
     }
 
     void pack_allocator()
@@ -1430,32 +1442,34 @@ protected:
 }
 
 template <typename CtrName, typename Profile, typename PageType, typename HistoryNode, typename PersitentTree, typename HistoryTree>
-auto create(const std::shared_ptr<inmem::Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>>& alloc, const UUID& name)
+auto create(const dumbo::shared_ptr<inmem::Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>>& alloc, const UUID& name)
 {
     return alloc->template create<CtrName>(name);
 }
 
 template <typename CtrName, typename Profile, typename PageType, typename HistoryNode, typename PersitentTree, typename HistoryTree>
-auto create(const std::shared_ptr<inmem::Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>>& alloc)
+auto create(const dumbo::shared_ptr<inmem::Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>>& alloc)
 {
-    return alloc->template create<CtrName>();
+    std::cout << "Create Ctr: " << TypeNameFactory<CtrName>::name() << "\n";
+
+	return alloc->template create<CtrName>();
 }
 
 template <typename CtrName, typename Profile, typename PageType, typename HistoryNode, typename PersitentTree, typename HistoryTree>
-auto find_or_create(const std::shared_ptr<inmem::Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>>& alloc, const UUID& name)
+auto find_or_create(const dumbo::shared_ptr<inmem::Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>>& alloc, const UUID& name)
 {
     return alloc->template find_or_create<CtrName>(name);
 }
 
 template <typename CtrName, typename Profile, typename PageType, typename HistoryNode, typename PersitentTree, typename HistoryTree>
-auto find(const std::shared_ptr<inmem::Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>>& alloc, const UUID& name)
+auto find(const dumbo::shared_ptr<inmem::Snapshot<Profile, PageType, HistoryNode, PersitentTree, HistoryTree>>& alloc, const UUID& name)
 {
     return alloc->template find<CtrName>(name);
 }
 
 
 template <typename Allocator>
-void check_snapshot(const std::shared_ptr<Allocator>& allocator, const char* message,  const char* source)
+void check_snapshot(const dumbo::shared_ptr<Allocator>& allocator, const char* message,  const char* source)
 {
     Int level = allocator->logger().level();
 
@@ -1472,7 +1486,7 @@ void check_snapshot(const std::shared_ptr<Allocator>& allocator, const char* mes
 }
 
 template <typename Allocator>
-void check_snapshot(const std::shared_ptr<Allocator>& allocator)
+void check_snapshot(const dumbo::shared_ptr<Allocator>& allocator)
 {
     check_snapshot(allocator, "Snapshot check failed", MA_RAW_SRC);
 }

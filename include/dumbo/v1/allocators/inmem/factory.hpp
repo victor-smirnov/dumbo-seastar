@@ -16,9 +16,69 @@
 
 #pragma once
 
+#include <memoria/v1/core/types/types.hpp>
+#include <dumbo/v1/tools/types.hpp>
+#include <dumbo/v1/tools/shared_ptr.hpp>
+#include <dumbo/v1/tools/shared_ptr2.hpp>
+
 #include "allocator.hpp"
+
+
+#include <core/shared_ptr.hh>
 
 namespace dumbo {
 namespace v1 {
+
+template <typename T>
+struct SeastarMakeSharedPtr {
+	template <typename... Args>
+	static auto make_shared(Args&&... args) {
+		return dumbo2::make_shared<T>(std::forward<Args>(args)...);
+	}
+};
+
+template <typename Profile>
+class DumboContainerCollectionCfg: public memoria::v1::BasicContainerCollectionCfg<Profile> {
+public:
+    template <typename T>
+    using CtrSharedPtr = dumbo2::shared_ptr<T>;
+
+    template <typename T>
+    using CtrEnableSharedFromThis = dumbo2::enable_shared_from_this<T>;
+
+    template <typename T>
+    using CtrMakeSharedPtr = SeastarMakeSharedPtr<T>;
+};
+
+}}
+
+
+namespace memoria {
+namespace v1 {
+
+template <typename Profile>
+class ContainerCollectionCfg;
+
+template <typename T>
+class ContainerCollectionCfg<dumbo::v1::DumboProfile<T> > {
+public:
+    using Types = dumbo::v1::DumboContainerCollectionCfg<dumbo::v1::DumboProfile<T>>;
+};
+
+
+
+
+
+
+template <typename CtrName>
+using DumboCtrTF = CtrTF<dumbo::v1::DumboProfile<>, CtrName>;
+
+template <typename CtrName>
+using DumboCtr = typename CtrTF<dumbo::v1::DumboProfile<>, CtrName>::Type;
+
+template <typename CtrName>
+void DumboInit() {
+    DumboCtr<CtrName>::initMetadata();
+}
 
 }}

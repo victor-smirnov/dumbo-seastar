@@ -32,8 +32,8 @@ struct AIOReaderAdapter<std::string> {
 	template <typename ISA>
 	static auto process(ISA&& isa)
 	{
-		return read<BigInt>(isa).then([&](auto len){
-			return isa->stream().read_exactly(len).then([&](const auto& buf){
+		return read<BigInt>(isa).then([=](auto len){
+			return isa->stream().read_exactly(len).then([=](const auto& buf){
 				return make_ready_future<std::string>(std::string(buf.get(), len));
 			});
 		});
@@ -47,7 +47,7 @@ struct AIOWriterAdapter<std::string> {
 	template <typename OSA>
 	static auto process(OSA&& osa, T str)
 	{
-		return do_with(std::move(str), [&](const auto& vv){
+		return do_with(std::move(str), [=](const auto& vv){
 			return ready(osa << (BigInt)vv.length() << CharData(vv));
 		});
 	}
@@ -73,8 +73,8 @@ struct AIOReaderAdapter<::sstring> {
 	template <typename ISA>
 	static auto process(ISA&& isa)
 	{
-		return read<BigInt>(isa).then([&](auto len){
-			return isa->stream().read_exect(len).then([&](const auto& buf){
+		return read<BigInt>(isa).then([=](auto len){
+			return isa->stream().read_exactly(len).then([=](const auto& buf){
 				return make_ready_future<std::string>(::sstring(buf.get(), len));
 			});
 		});

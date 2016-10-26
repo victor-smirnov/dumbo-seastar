@@ -47,10 +47,10 @@ namespace ss = seastar;
 
 int main(int argc, char** argv)
 {
-	MEMORIA_INIT(DefaultProfile<>);
+	MEMORIA_INIT(DumboProfile<>);
 
 	using Key = BigInt;
-	DInit<Set<Key>>();
+	DumboInit<Set<Key>>();
 
 	try {
 		app_template app;
@@ -60,7 +60,7 @@ int main(int argc, char** argv)
 				auto alloc = SeastarInMemAllocator<>::create();
 				auto snp = alloc->master()->branch();
 
-				auto map = create<Set<Key>>(snp);
+				auto map = create<Set<Key>>(snp, UUID::parse("b1197537-12eb-4dc7-811b-ee0491720fbc"));
 
 				for (int c = 0; c < 10000; c++)
 				{
@@ -68,6 +68,7 @@ int main(int argc, char** argv)
 				}
 
 				snp->commit();
+				snp->set_as_master();
 
 				alloc->store("dumbo-data.dump");
 
@@ -77,17 +78,17 @@ int main(int argc, char** argv)
 
 				alloc1->dump("dumbo-dump");
 
-//				auto snp1 = alloc1->find(snp->uuid());
-//
-//				auto map1 = snp1->find<Set<Key>>(map->name());
-//
-//				auto i1 = map->begin();
-//
-//				while (!i1->isEnd())
-//				{
-//					std::cout << i1->key() << "\n";
-//					i1->next();
-//				}
+				auto snp1 = alloc1->master();
+
+				auto map1 = snp1->find<Set<Key>>(UUID::parse("b1197537-12eb-4dc7-811b-ee0491720fbc"));
+
+				auto i1 = map1->begin();
+
+				while (!i1->isEnd())
+				{
+					std::cout << i1->key() << "\n";
+					i1->next();
+				}
 			}).handle_exception([](auto eptr){
 				try {
 					std::rethrow_exception(eptr);

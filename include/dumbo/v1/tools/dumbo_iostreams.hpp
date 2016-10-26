@@ -86,7 +86,7 @@ struct AIOReaderAdapter<Byte> {
 
 	template <typename ISA>
 	static auto process(ISA&& isa) {
-		return isa->stream().read_exactly(sizeof(T)).then([&](const auto& buf){
+		return isa->stream().read_exactly(sizeof(T)).then([=](const auto& buf){
 			T value = *T2T<const T*>(buf.get());
 			return make_ready_future<T>(value);
 		});
@@ -100,7 +100,7 @@ struct AIOReaderAdapter<UByte> {
 
 	template <typename ISA>
 	static auto process(ISA&& isa) {
-		return isa->stream().read_exactly(sizeof(T)).then([&](const auto& buf){
+		return isa->stream().read_exactly(sizeof(T)).then([=](const auto& buf){
 			T value = *T2T<const T*>(buf.get());
 			return make_ready_future<T>(value);
 		});
@@ -113,7 +113,7 @@ struct AIOReaderAdapter<bool> {
 
 	template <typename ISA>
 	static auto process(ISA&& isa) {
-		return isa->is_.read_exactly(sizeof(T)).then([&](const auto& buf){
+		return isa->is_.read_exactly(sizeof(T)).then([=](const auto& buf){
 			T value = *T2T<const T*>(buf.get());
 			return make_ready_future<T>(value);
 		});
@@ -195,9 +195,9 @@ future<T> read(const Ptr<TypedAsyncInputStream>& adaptor)
 }
 
 
-static inline lw_shared_ptr<TypedAsyncInputStream> read(file f)
+static inline ::shared_ptr<TypedAsyncInputStream> read(file f)
 {
-	return ::make_lw_shared<TypedAsyncInputStream>(::make_file_input_stream(std::move(f)));
+	return ::make_shared<TypedAsyncInputStream>(::make_file_input_stream(std::move(f)));
 }
 
 
@@ -205,7 +205,7 @@ static inline lw_shared_ptr<TypedAsyncInputStream> read(file f)
 template <template <typename> class Ptr, typename T>
 future<Ptr<TypedAsyncInputStream>> operator>>(Ptr<TypedAsyncInputStream> stream, T& target)
 {
-	return read<T>(stream).then([stream = std::move(stream), &target](auto value){
+	return read<T>(stream).then([=, &target](auto value){
 		target = value;
 		return make_ready_future<Ptr<TypedAsyncInputStream>>(std::move(stream));
 	});
@@ -215,7 +215,7 @@ template <template <typename> class Ptr, typename T>
 future<Ptr<TypedAsyncInputStream>> operator>>(future<Ptr<TypedAsyncInputStream>> ff, T& target)
 {
 	return ff.then([&](auto stream){
-		return read<T>(stream).then([stream = std::move(stream), &target](auto value){
+		return read<T>(stream).then([=, &target](auto value){
 			target = value;
 			return make_ready_future<Ptr<TypedAsyncInputStream>>(std::move(stream));
 		});
@@ -245,7 +245,7 @@ struct AIOWriterAdapterBase {
 	template <typename OSA, typename TT>
 	static auto process(OSA&& osa, TT&& value)
 	{
-		return do_with(osa->converter()->convert(value), [&](auto cvalue) {
+		return do_with(osa->converter()->convert(value), [=](auto& cvalue) {
 			return osa->write(&cvalue, 0, sizeof(T));
 		});
 	}
@@ -268,9 +268,8 @@ struct AIOWriterAdapter<Byte> {
 	template <typename OSA>
 	static auto process(OSA&& osa, T value)
 	{
-		using char_t = typename decltype(osa->os_)::char_type;
-		return do_with(std::move(value), [&](auto cvalue) {
-			return osa->os_.write(T2T<const char_t*>(&cvalue), sizeof(T));
+		return do_with(std::move(value), [=](auto& cvalue) {
+			return osa->write(&cvalue, sizeof(T));
 		});
 	}
 };
@@ -282,9 +281,8 @@ struct AIOWriterAdapter<UByte> {
 	template <typename OSA>
 	static auto process(OSA&& osa, T value)
 	{
-		using char_t = typename decltype(osa->os_)::char_type;
-		return do_with(std::move(value), [&](auto cvalue) {
-			return osa->os_.write(T2T<const char_t*>(&cvalue), sizeof(T));
+		return do_with(std::move(value), [=](auto& cvalue) {
+			return osa->write(&cvalue, 0, sizeof(T));
 		});
 	}
 };
@@ -300,8 +298,7 @@ struct AIOWriterAdapter<CharData> {
 	template <typename OSA>
 	static auto process(OSA&& osa, T value)
 	{
-		using char_t = typename decltype(osa->os_)::char_type;
-		return osa->os_.write(value.data(), value.length());
+		return osa->write(value.data(), 0, value.length());
 	}
 };
 
@@ -378,14 +375,14 @@ public:
 	}
 };
 
-static inline lw_shared_ptr<TypedAsyncOutputStream> write(const file& f)
+static inline ::shared_ptr<TypedAsyncOutputStream> write(const file& f)
 {
-	return ::make_lw_shared<TypedAsyncOutputStream>(::make_file_output_stream(f));
+	return ::make_shared<TypedAsyncOutputStream>(::make_file_output_stream(f));
 }
 
-static inline lw_shared_ptr<TypedAsyncOutputStream> write(file&& f)
+static inline ::shared_ptr<TypedAsyncOutputStream> write(file&& f)
 {
-	return ::make_lw_shared<TypedAsyncOutputStream>(::make_file_output_stream(std::move(f)));
+	return ::make_shared<TypedAsyncOutputStream>(::make_file_output_stream(std::move(f)));
 }
 
 

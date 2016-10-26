@@ -23,6 +23,7 @@
 #include <dumbo/v1/tools/aio_string.hpp>
 #include <dumbo/v1/tools/sync_file.hpp>
 #include <dumbo/v1/tools/dump_walker.hpp>
+#include <dumbo/v1/tools/shared_ptr.hpp>
 
 #include <dumbo/v1/allocators/inmem/persistent_tree_node.hpp>
 #include <dumbo/v1/allocators/inmem/persistent_tree.hpp>
@@ -225,8 +226,8 @@ public:
     using StoreLockGuardT		= std::lock_guard<StoreMutexT>;
     using SnapshotLockGuardT	= std::lock_guard<SnapshotMutexT>;
 
-    using TypedAsyncOutputStreamPtr = lw_shared_ptr<TypedAsyncOutputStream>;
-    using TypedAsyncInputStreamPtr 	= lw_shared_ptr<TypedAsyncInputStream>;
+    using TypedAsyncOutputStreamPtr = ::shared_ptr<TypedAsyncOutputStream>;
+    using TypedAsyncInputStreamPtr 	= ::shared_ptr<TypedAsyncInputStream>;
 
     struct HistoryNode {
 
@@ -497,7 +498,7 @@ public:
 
     using PersistentTreeT       = v1::inmem::PersistentTree<BranchNodeT, LeafNodeT, HistoryNode, PageType>;
     using SnapshotT             = v1::inmem::Snapshot<Profile, PageType, HistoryNode, PersistentTreeT, MyType>;
-    using SnapshotPtr           = std::shared_ptr<SnapshotT>;
+    using SnapshotPtr           = dumbo::shared_ptr<SnapshotT>;
     using AllocatorPtr          = std::shared_ptr<MyType>;
 
     using TxnMap                = std::unordered_map<TxnId, HistoryNode*, UUIDKeyHash, UUIDKeyEq>;
@@ -564,10 +565,13 @@ private:
 
     ReverseBranchMap snapshot_labels_metadata_;
 
+    std::atomic<Int> cpu_id_;
+
 public:
     PersistentInMemAllocatorT():
         logger_("PersistentInMemAllocator"),
-        metadata_(MetadataRepository<Profile>::getMetadata())
+        metadata_(MetadataRepository<Profile>::getMetadata()),
+		cpu_id_(engine().cpu_id())
     {
         SnapshotT::initMetadata();
 
@@ -584,8 +588,12 @@ public:
 
 private:
     PersistentInMemAllocatorT(Int):
-        metadata_(MetadataRepository<Profile>::getMetadata())
-    {}
+    	logger_("PersistentInMemAllocator"),
+        metadata_(MetadataRepository<Profile>::getMetadata()),
+		cpu_id_(engine().cpu_id())
+    {
+    	SnapshotT::initMetadata();
+    }
 
     auto& store_mutex() {
     	return store_mutex_;
@@ -600,6 +608,10 @@ public:
     virtual ~PersistentInMemAllocatorT()
     {
         free_memory(history_tree_);
+    }
+
+    Int cpu_id() const {
+    	return cpu_id_.load(std::memory_order_acq_rel);
     }
 
     MutexT& mutex() {
@@ -710,7 +722,7 @@ public:
 
             if (history_node->is_committed())
             {
-                return std::make_shared<SnapshotT>(history_node, this->shared_from_this());
+                return dumbo::make_shared<SnapshotT>(history_node, this->shared_from_this());
             }
             if (history_node->is_data_locked())
             {
@@ -741,13 +753,13 @@ public:
 
             if (history_node->is_committed())
             {
-                return std::make_shared<SnapshotT>(history_node, this->shared_from_this());
+                return dumbo::make_shared<SnapshotT>(history_node, this->shared_from_this());
             }
             else if (history_node->is_data_locked())
             {
             	if (history_node->references() == 0)
             	{
-            		return std::make_shared<SnapshotT>(history_node, this->shared_from_this());
+            		return dumbo::make_shared<SnapshotT>(history_node, this->shared_from_this());
             	}
             	else {
             		throw Exception(MA_SRC, SBuf() << "Snapshot id " << history_node->txn_id() << " is locked and open");
@@ -762,15 +774,27 @@ public:
         }
     }
 
+//    SnapshotPtr master()
+//    {
+//    	std::lock(mutex_, master_->snapshot_mutex());
+//
+//    	LockGuardT lock_guard(mutex_, std::adopt_lock);
+//    	SnapshotLockGuardT snapshot_lock_guard(master_->snapshot_mutex(), std::adopt_lock);
+//
+//        return std::make_shared<SnapshotT>(master_, this->shared_from_this());
+//    }
+
+
     SnapshotPtr master()
     {
-    	std::lock(mutex_, master_->snapshot_mutex());
+    	auto ptr = do_here_or_there([=]{
+    		using RT = dumbo::shared_ptr_holder<SnapshotT>;
+    		return make_ready_future<RT>(dumbo::make_shared_holder<SnapshotT>(master_, this->shared_from_this()));
+    	});
 
-    	LockGuardT lock_guard(mutex_, std::adopt_lock);
-    	SnapshotLockGuardT snapshot_lock_guard(master_->snapshot_mutex(), std::adopt_lock);
-
-        return std::make_shared<SnapshotT>(master_, this->shared_from_this());
+    	return SnapshotPtr(ptr.get0());
     }
+
 
     inmem::SnapshotMetadata<TxnId> describe_master() const
     {
@@ -900,6 +924,8 @@ public:
         for (size_t c = 7; c < sizeof(signature); c++) signature[c] = 0;
 
         output->write(signature, 0, sizeof(signature)).get();
+
+        std::cout << "Header\n";
 
         write_metadata(output);
 
@@ -1103,6 +1129,22 @@ public:
     }
 
 private:
+
+    template <typename Fn>
+    auto do_here_or_there(Fn&& fn)
+    {
+    	Int cpu_id = this->cpu_id();
+
+    	if (engine().cpu_id() == cpu_id)
+    	{
+    		// do here
+    		return fn();
+    	}
+    	else {
+    		// do there
+    		return smp::submit_to(cpu_id, std::forward<Fn>(fn));
+    	}
+    }
 
     const auto& snapshot_labels_metadata() const {
     	return snapshot_labels_metadata_;
@@ -1312,10 +1354,13 @@ private:
         		return read<Int>(in).then([=, &map](auto page_size) {
         			return read<Int>(in).then([=, &map](auto ctr_hash) {
         				return read<Int>(in).then([=, &map](auto page_hash) {
-        					unique_ptr<Byte, void (*)(void*)> page_data((Byte*)::malloc(page_data_size), ::free);
-        					Page* page = T2T<Page*>(::malloc(page_size));
 
-        					return in->read(page_data.get(), page_data_size).then([=, &map, page_data = std::move(page_data)] {
+        					Byte* page_data_ptr = (Byte*)::malloc(page_data_size);
+        					unique_ptr<Byte, void (*)(void*)> page_data(page_data_ptr, ::free);
+
+        					return in->read(page_data_ptr, page_data_size).then([=, &map, page_data = std::move(page_data)] {
+
+        						Page* page = T2T<Page*>(::malloc(page_size));
 
         						auto pageMetadata = metadata_->getPageMetadata(ctr_hash, page_hash);
         						pageMetadata->getPageOperations()->deserialize(page_data.get(), page_data_size, T2T<void*>(page));
@@ -1392,28 +1437,29 @@ private:
 			>> node->parent()
 			>> node->metadata()
 			>> children
-		).then([&, children]{
-			node->status() = static_cast<typename HistoryNode::Status>(status);
+		).then([=, &children, &status]{
+
+        	node->status() = static_cast<typename HistoryNode::Status>(status);
 
 			BigInt lchildren = children;
 
-			return do_with(boost::irange((BigInt)0, (BigInt)lchildren, (BigInt)1), [=, &map](auto& range) {
-				return do_for_each(range, [=, &map](auto idx) {
-					return read<TxnId>(in).then([=, &map](const auto& child_txn_id) {
+			return do_with(boost::irange((BigInt)0, (BigInt)lchildren, (BigInt)1), [=](auto& range) {
+				return do_for_each(range, [=](auto idx) {
+					return read<TxnId>(in).then([=](const auto& child_txn_id) {
 						node->children().push_back(child_txn_id);
 						return ::now();
 					});
 				});
 			});
-		}).then([=, &map]{
-			if (map.find(node->txn_id()) == map.end())
-			{
-				map[node->txn_id()] = node;
-			}
-			else {
-				throw Exception(MA_SRC, SBuf() << "HistoryTree Node " << node->txn_id() << " was already registered");
-			}
 		}).get();
+
+        if (map.find(node->txn_id()) == map.end())
+        {
+        	map[node->txn_id()] = node;
+        }
+        else {
+        	throw Exception(MA_SRC, SBuf() << "HistoryTree Node " << node->txn_id() << " was already registered");
+        }
     }
 
 
@@ -1495,15 +1541,15 @@ private:
 
     void write_metadata(const TypedAsyncOutputStreamPtr& out)
     {
-        UByte type = TYPE_METADATA;
+    	UByte type = TYPE_METADATA;
 
         ready(
         	out << type
         		<< master_->txn_id()
 				<< history_tree_->txn_id()
 				<< (BigInt) named_branches_.size()
-		).then([&]{
-        	return do_for_each(named_branches_, [&](const auto& entry){
+		).then([=]{
+        	return do_for_each(named_branches_, [=](const auto& entry){
         		return ready(
         			out << entry.first
         				<< entry.second->txn_id());
@@ -1515,7 +1561,7 @@ private:
 
     void write(TypedAsyncOutputStreamPtr out, const Checksum& checksum)
     {
-        UByte type = TYPE_CHECKSUM;
+    	UByte type = TYPE_CHECKSUM;
 
         ready(
         	out << type
@@ -1531,7 +1577,7 @@ private:
     		out << type
 				<< (Int)history_node->status()
 				<< history_node->txn_id()
-        ).then([&]{
+        ).then([=]{
     		if (history_node->root())
     		{
     			return out << history_node->root()->node_id();
@@ -1541,7 +1587,7 @@ private:
     		}
         })
 			<< history_node->root_id()
-		).then([&](const auto& out) {
+		).then([=](auto out) {
     		if (history_node->parent())
     		{
     			return out << history_node->parent()->txn_id();
@@ -1552,8 +1598,8 @@ private:
     	})
 			<< history_node->metadata()
 			<< (BigInt)history_node->children().size()
-    	).then([&](const auto& out) {
-    		do_for_each(history_node->children(), [&](const auto& child) {
+    	).then([=](auto out) {
+    		return do_for_each(history_node->children(), [=](const auto& child) {
     			return ready(out << child->txn_id());
     		});
     	}).get();
@@ -1607,29 +1653,29 @@ private:
     }
 
 
-    void write(const TypedAsyncOutputStreamPtr& out, const BranchNodeBufferT* node)
+    void write(TypedAsyncOutputStreamPtr out, const BranchNodeBufferT* node)
     {
         UByte type = TYPE_BRANCH_NODE;
 
-        (out << type).then([&](const auto& out){
+        (out << type).then([=](auto out){
         	return node->write(out);
         }).get();
 
         records_++;
     }
 
-    void write(const TypedAsyncOutputStreamPtr& out, const LeafNodeBufferT* node)
+    void write(TypedAsyncOutputStreamPtr out, const LeafNodeBufferT* node)
     {
-        UByte type = TYPE_LEAF_NODE;
+    	UByte type = TYPE_LEAF_NODE;
 
-        (out << type).then([&](const auto& out){
+        (out << type).then([=](auto out){
         	return node->write(out);
         }).get();
 
         records_++;
     }
 
-    void write(const TypedAsyncOutputStreamPtr& out, const RCPagePtr* page_ptr)
+    void write(TypedAsyncOutputStreamPtr out, const RCPagePtr* page_ptr)
     {
     	UByte type = TYPE_DATA_PAGE;
 
@@ -1650,7 +1696,7 @@ private:
 			<< page->page_size()
 			<< page->ctr_type_hash()
 			<< page->page_type_hash()
-		).then([&](const auto& out) {
+		).then([=, &buffer](auto out) {
         	return out->write(buffer.get(), 0, total_data_size);
         }).get();
 
@@ -1803,7 +1849,7 @@ private:
 };
 
 
-template <typename Profile = DefaultProfile<>>
+template <typename Profile = DumboProfile<>>
 using SeastarInMemAllocator = class PersistentInMemAllocatorT<
         Profile,
         typename ContainerCollectionCfg<Profile>::Types::Page
