@@ -19,12 +19,11 @@
 #include <memoria/v1/core/types/types.hpp>
 #include <dumbo/v1/tools/types.hpp>
 #include <dumbo/v1/tools/shared_ptr.hpp>
-#include <dumbo/v1/tools/shared_ptr2.hpp>
-
 #include "allocator.hpp"
 
 
 #include <core/shared_ptr.hh>
+#include "../../tools/shared_ptr_ns.hpp"
 
 namespace dumbo {
 namespace v1 {
@@ -33,7 +32,7 @@ template <typename T>
 struct SeastarMakeSharedPtr {
 	template <typename... Args>
 	static auto make_shared(Args&&... args) {
-		return dumbo2::make_shared<T>(std::forward<Args>(args)...);
+		return ns::make_shared<T>(std::forward<Args>(args)...);
 	}
 };
 
@@ -41,10 +40,10 @@ template <typename Profile>
 class DumboContainerCollectionCfg: public memoria::v1::BasicContainerCollectionCfg<Profile> {
 public:
     template <typename T>
-    using CtrSharedPtr = dumbo2::shared_ptr<T>;
+    using CtrSharedPtr = ns::shared_ptr<T>;
 
     template <typename T>
-    using CtrEnableSharedFromThis = dumbo2::enable_shared_from_this<T>;
+    using CtrEnableSharedFromThis = ns::enable_shared_from_this<T>;
 
     template <typename T>
     using CtrMakeSharedPtr = SeastarMakeSharedPtr<T>;

@@ -24,6 +24,10 @@
 #include <dumbo/v1/tools/sync_file.hpp>
 #include <dumbo/v1/tools/dump_walker.hpp>
 #include <dumbo/v1/tools/shared_ptr.hpp>
+#include <dumbo/v1/tools/memory.hpp>
+#include <dumbo/v1/tools/count_down_latch.hpp>
+#include <dumbo/v1/tools/misc.hpp>
+#include <dumbo/v1/tools/assert.hpp>
 
 #include <dumbo/v1/allocators/inmem/persistent_tree_node.hpp>
 #include <dumbo/v1/allocators/inmem/persistent_tree.hpp>
@@ -36,10 +40,12 @@
 #include <memoria/v1/core/tools/stream.hpp>
 #include <memoria/v1/core/tools/pair.hpp>
 #include <memoria/v1/core/tools/latch.hpp>
+#include <memoria/v1/core/tools/strings/string_buffer.hpp>
 
 #include "core/fstream.hh"
 #include "core/shared_ptr.hh"
 #include "core/sleep.hh"
+#include "core/rwlock.hh"
 
 #include <boost/range.hpp>
 
@@ -67,21 +73,14 @@ namespace {
 	private:
 		PageT* page_;
 		std::atomic<RefCntT> refs_;
+		Int cpu_id_;
 
 		// Currently for debug purposes
 		static std::atomic<BigInt> page_cnt_;
 	public:
-		PagePtr(PageT* page, BigInt refs): page_(page), refs_(refs) {
-			//page_cnt_++;
-			//cout << "Create page: " << page_cnt_ << endl;
-		}
+		PagePtr(PageT* page, BigInt refs, Int cpu_id): page_(page), refs_(refs), cpu_id_(cpu_id) {}
 
 		~PagePtr() {
-			//if (--page_cnt_ == 0) {
-			//	cout << "All Pages removed" << endl;
-			//}
-			//cout << "Remove page: " << page_cnt_ << endl;
-
 			::free(page_);
 		}
 
@@ -104,6 +103,8 @@ namespace {
 		RefCntT unref() {
 			return --refs_;
 		}
+
+		Int cpu_id() const {return cpu_id_;}
 	};
 
 	template <typename PageT>
@@ -218,22 +219,12 @@ public:
     using NodeBaseT         = typename BranchNodeT::NodeBaseT;
     using NodeBaseBufferT   = typename BranchNodeBufferT::NodeBaseT;
 
-    using MutexT			= RecursiveMutex;
-    using SnapshotMutexT	= RecursiveMutex;
-    using StoreMutexT		= RecursiveMutex;
-
-    using LockGuardT			= std::lock_guard<MutexT>;
-    using StoreLockGuardT		= std::lock_guard<StoreMutexT>;
-    using SnapshotLockGuardT	= std::lock_guard<SnapshotMutexT>;
-
     using TypedAsyncOutputStreamPtr = ::shared_ptr<TypedAsyncOutputStream>;
     using TypedAsyncInputStreamPtr 	= ::shared_ptr<TypedAsyncInputStream>;
 
     struct HistoryNode {
 
     	using Status 		= inmem::SnapshotStatus;
-        using HMutexT 		= SnapshotMutexT;
-        using HLockGuardT 	= SnapshotLockGuardT;
 
     private:
         MyType* allocator_;
@@ -252,8 +243,6 @@ public:
         TxnId txn_id_;
 
         BigInt references_ = 0;
-
-        mutable HMutexT mutex_;
 
     public:
 
@@ -303,15 +292,6 @@ public:
         const auto* callocator() const {
         	return allocator_;
         }
-
-        auto& allocator_mutex() {return allocator_->mutex_;}
-        const auto& allocator_mutex() const {return allocator_->mutex_;}
-
-        auto& store_mutex() {return allocator_->store_mutex_;}
-        const auto& store_mutex() const {return allocator_->store_mutex_;}
-
-        auto& snapshot_mutex() {return mutex_;}
-        const auto& snapshot_mutex() const {return mutex_;}
 
         void remove_child(HistoryNode* child)
         {
@@ -408,7 +388,6 @@ public:
         }
 
         const auto& metadata() const {
-        	HLockGuardT lock(mutex_);
         	return metadata_;
         }
 
@@ -495,10 +474,13 @@ public:
         const auto& metadata() const {return metadata_;}
     };
 
+    template <typename T>
+    using SharedForeignPtr 		= dumbo::shared_ptr<T>;
+
 
     using PersistentTreeT       = v1::inmem::PersistentTree<BranchNodeT, LeafNodeT, HistoryNode, PageType>;
     using SnapshotT             = v1::inmem::Snapshot<Profile, PageType, HistoryNode, PersistentTreeT, MyType>;
-    using SnapshotPtr           = dumbo::shared_ptr<SnapshotT>;
+    using SnapshotPtr           = SharedForeignPtr<SnapshotT>;
     using AllocatorPtr          = std::shared_ptr<MyType>;
 
     using TxnMap                = std::unordered_map<TxnId, HistoryNode*, UUIDKeyHash, UUIDKeyEq>;
@@ -509,6 +491,8 @@ public:
     using RCPageSet             = std::unordered_set<RCPagePtr*>;
     using BranchMap             = std::unordered_map<String, HistoryNode*>;
     using ReverseBranchMap      = std::unordered_map<const HistoryNode*, String>;
+
+
 
     template <typename, typename, typename, typename, typename>
     friend class v1::inmem::Snapshot;
@@ -558,20 +542,19 @@ private:
 
     PairPtr pair_;
 
-    mutable MutexT mutex_;
-    mutable StoreMutexT store_mutex_;
+    SeastarCountDownLatch<BigInt> active_snapshots_;
 
-    CountDownLatch<BigInt> active_snapshots_;
+//    ReverseBranchMap snapshot_labels_metadata_;
 
-    ReverseBranchMap snapshot_labels_metadata_;
+    Int master_cpu_id_;
 
-    std::atomic<Int> cpu_id_;
+    rwlock store_mutex_;
 
 public:
     PersistentInMemAllocatorT():
         logger_("PersistentInMemAllocator"),
         metadata_(MetadataRepository<Profile>::getMetadata()),
-		cpu_id_(engine().cpu_id())
+		master_cpu_id_(engine().cpu_id())
     {
         SnapshotT::initMetadata();
 
@@ -579,10 +562,10 @@ public:
 
         snapshot_map_[history_tree_->txn_id()] = history_tree_;
 
-        auto leaf = new LeafNodeT(history_tree_->txn_id(), UUID::make_random());
+        auto leaf = new LeafNodeT(history_tree_->txn_id(), UUID::make_random(), master_cpu_id_);
         history_tree_->set_root(leaf);
 
-        SnapshotT snapshot(history_tree_, this);
+        SnapshotT snapshot(history_tree_, this, engine().cpu_id());
         snapshot.commit();
     }
 
@@ -590,7 +573,7 @@ private:
     PersistentInMemAllocatorT(Int):
     	logger_("PersistentInMemAllocator"),
         metadata_(MetadataRepository<Profile>::getMetadata()),
-		cpu_id_(engine().cpu_id())
+		master_cpu_id_(engine().cpu_id())
     {
     	SnapshotT::initMetadata();
     }
@@ -611,27 +594,7 @@ public:
     }
 
     Int cpu_id() const {
-    	return cpu_id_.load(std::memory_order_acq_rel);
-    }
-
-    MutexT& mutex() {
-    	return mutex_;
-    }
-
-    const MutexT& mutex() const {
-    	return mutex_;
-    }
-
-    void lock() {
-    	mutex_.lock();
-    }
-
-    void unlock() {
-    	mutex_.unlock();
-    }
-
-    bool try_lock() {
-    	return mutex_.try_lock();
+    	return master_cpu_id_;
     }
 
     PairPtr& pair() {
@@ -661,8 +624,13 @@ public:
 
     void pack()
     {
-        std::lock_guard<MutexT> lock(mutex_);
-    	do_pack(history_tree_);
+        store_mutex_.write_lock().then([this]{
+        	do_pack(history_tree_);
+        	return ::now();
+        }).finally([this] {
+        	store_mutex_.write_unlock();
+        	return ::now();
+        }).get0();
     }
 
 
@@ -678,63 +646,65 @@ public:
     }
 
 
-    inmem::SnapshotMetadata<TxnId> describe(const TxnId& snapshot_id) const
+    SharedForeignPtr<inmem::SnapshotMetadata<TxnId>> describe(const TxnId& snapshot_id) const
     {
-    	LockGuardT lock_guard2(mutex_);
+    	auto ptr = submit_to_master([=]{
+    		auto iter = snapshot_map_.find(snapshot_id);
+    		if (iter != snapshot_map_.end())
+    		{
+    			const auto history_node = iter->second;
 
-        auto iter = snapshot_map_.find(snapshot_id);
-        if (iter != snapshot_map_.end())
-        {
-            const auto history_node = iter->second;
+    			std::vector<TxnId> children;
 
-            SnapshotLockGuardT snapshot_lock_guard(history_node->snapshot_mutex());
+    			for (const auto& node: history_node->children())
+    			{
+    				children.emplace_back(node->txn_id());
+    			}
 
-        	std::vector<TxnId> children;
+    			auto parent_id = history_node->parent() ? history_node->parent()->txn_id() : UUID();
 
-        	for (const auto& node: history_node->children())
-        	{
-        		children.emplace_back(node->txn_id());
-        	}
+    			return dumbo::make_shared_holder_now<inmem::SnapshotMetadata<TxnId>>(
+    				parent_id, history_node->txn_id(), children, history_node->metadata(), history_node->status()
+    			);
+    		}
+    		else {
+    			throw Exception(MA_SRC, SBuf() << "Snapshot id " << snapshot_id << " is unknown");
+    		}
+    	}).get0();
 
-        	auto parent_id = history_node->parent() ? history_node->parent()->txn_id() : UUID();
-
-        	return inmem::SnapshotMetadata<TxnId>(
-        		parent_id, history_node->txn_id(), children, history_node->metadata(), history_node->status()
-			);
-        }
-        else {
-            throw Exception(MA_SRC, SBuf() << "Snapshot id " << snapshot_id << " is unknown");
-        }
+    	return SharedForeignPtr<inmem::SnapshotMetadata<TxnId>>(std::move(ptr));
     }
 
 
 
     SnapshotPtr find(const TxnId& snapshot_id)
     {
-    	LockGuardT lock_guard(mutex_);
+    	Int cpu_id = engine().cpu_id();
 
-        auto iter = snapshot_map_.find(snapshot_id);
-        if (iter != snapshot_map_.end())
-        {
-            auto history_node = iter->second;
-
-            SnapshotLockGuardT snapshot_lock_guard(history_node->snapshot_mutex());
-
-            if (history_node->is_committed())
+    	auto ptr = submit_to_master([=] {
+            auto iter = snapshot_map_.find(snapshot_id);
+            if (iter != snapshot_map_.end())
             {
-                return dumbo::make_shared<SnapshotT>(history_node, this->shared_from_this());
-            }
-            if (history_node->is_data_locked())
-            {
-            	throw Exception(MA_SRC, SBuf() << "Snapshot " << history_node->txn_id() << " data is locked");
+                auto history_node = iter->second;
+
+                if (history_node->is_committed())
+                {
+                    return dumbo::make_shared_holder_now<SnapshotT>(history_node, this->shared_from_this(), cpu_id);
+                }
+                else if (history_node->is_data_locked())
+                {
+                	throw Exception(MA_SRC, SBuf() << "Snapshot " << history_node->txn_id() << " data is locked");
+                }
+                else {
+                    throw Exception(MA_SRC, SBuf() << "Snapshot " << history_node->txn_id() << " is " << (history_node->is_active() ? "active" : "dropped"));
+                }
             }
             else {
-                throw Exception(MA_SRC, SBuf() << "Snapshot " << history_node->txn_id() << " is " << (history_node->is_active() ? "active" : "dropped"));
+                throw Exception(MA_SRC, SBuf() << "Snapshot id " << snapshot_id << " is unknown");
             }
-        }
-        else {
-            throw Exception(MA_SRC, SBuf() << "Snapshot id " << snapshot_id << " is unknown");
-        }
+    	}).get0();
+
+    	return SnapshotPtr(std::move(ptr));
     }
 
 
@@ -742,138 +712,137 @@ public:
 
     SnapshotPtr find_branch(StringRef name)
     {
-    	LockGuardT lock_guard(mutex_);
+    	Int cpu_id = engine().cpu_id();
 
-    	auto iter = named_branches_.find(name);
-        if (iter != named_branches_.end())
-        {
-            auto history_node = iter->second;
+    	auto ptr = submit_to_master([=] {
+    		auto iter = named_branches_.find(name);
+    		if (iter != named_branches_.end())
+    		{
+    			auto history_node = iter->second;
 
-            SnapshotLockGuardT snapshot_lock_guard(history_node->snapshot_mutex());
+    			if (history_node->is_committed())
+    			{
+    				return dumbo::make_shared_holder_now<SnapshotT>(history_node, this->shared_from_this(), cpu_id);
+    			}
+    			else if (history_node->is_data_locked())
+    			{
+    				if (history_node->references() == 0)
+    				{
+    					return dumbo::make_shared_holder_now<SnapshotT>(history_node, this->shared_from_this(), cpu_id);
+    				}
+    				else {
+    					throw Exception(MA_SRC, SBuf() << "Snapshot id " << history_node->txn_id() << " is locked and open");
+    				}
+    			}
+    			else {
+    				throw Exception(MA_SRC, SBuf() << "Snapshot " << history_node->txn_id() << " is " << (history_node->is_active() ? "active" : "dropped"));
+    			}
+    		}
+    		else {
+    			throw Exception(MA_SRC, SBuf() << "Named branch \"" << name << "\" is not known");
+    		}
+    	}).get0();
 
-            if (history_node->is_committed())
-            {
-                return dumbo::make_shared<SnapshotT>(history_node, this->shared_from_this());
-            }
-            else if (history_node->is_data_locked())
-            {
-            	if (history_node->references() == 0)
-            	{
-            		return dumbo::make_shared<SnapshotT>(history_node, this->shared_from_this());
-            	}
-            	else {
-            		throw Exception(MA_SRC, SBuf() << "Snapshot id " << history_node->txn_id() << " is locked and open");
-            	}
-            }
-            else {
-                throw Exception(MA_SRC, SBuf() << "Snapshot " << history_node->txn_id() << " is " << (history_node->is_active() ? "active" : "dropped"));
-            }
-        }
-        else {
-            throw Exception(MA_SRC, SBuf() << "Named branch \"" << name << "\" is not known");
-        }
+    	return SnapshotPtr(std::move(ptr));
     }
 
-//    SnapshotPtr master()
-//    {
-//    	std::lock(mutex_, master_->snapshot_mutex());
-//
-//    	LockGuardT lock_guard(mutex_, std::adopt_lock);
-//    	SnapshotLockGuardT snapshot_lock_guard(master_->snapshot_mutex(), std::adopt_lock);
-//
-//        return std::make_shared<SnapshotT>(master_, this->shared_from_this());
-//    }
 
 
     SnapshotPtr master()
     {
-    	auto ptr = do_here_or_there([=]{
-    		using RT = dumbo::shared_ptr_holder<SnapshotT>;
-    		return make_ready_future<RT>(dumbo::make_shared_holder<SnapshotT>(master_, this->shared_from_this()));
-    	});
+    	Int owner_cpu_id = engine().cpu_id();
+    	auto ptr = submit_to_master([=]{
+    		return dumbo::make_shared_holder_now<SnapshotT>(master_, this->shared_from_this(), owner_cpu_id);
+    	}).get0();
 
-    	return SnapshotPtr(ptr.get0());
+    	return SnapshotPtr(std::move(ptr));
     }
 
 
-    inmem::SnapshotMetadata<TxnId> describe_master() const
+    SharedForeignPtr<inmem::SnapshotMetadata<TxnId>> describe_master() const
     {
-    	std::lock(mutex_, master_->snapshot_mutex());
-    	LockGuardT lock_guard2(mutex_, std::adopt_lock);
-    	SnapshotLockGuardT snapshot_lock_guard(master_->snapshot_mutex(), std::adopt_lock);
+    	auto ptr = submit_to_master([=] {
+    		std::vector<TxnId> children;
 
-    	std::vector<TxnId> children;
+    		for (const auto& node: master_->children())
+    		{
+    			children.emplace_back(node->txn_id());
+    		}
 
-    	for (const auto& node: master_->children())
-    	{
-    		children.emplace_back(node->txn_id());
-    	}
+    		auto parent_id = master_->parent() ? master_->parent()->txn_id() : UUID();
 
-    	auto parent_id = master_->parent() ? master_->parent()->txn_id() : UUID();
-
-    	return inmem::SnapshotMetadata<TxnId>(
+    		return dumbo::make_shared_holder_now<inmem::SnapshotMetadata<TxnId>>(
     			parent_id, master_->txn_id(), children, master_->metadata(), master_->status()
-    	);
+    		);
+    	}).get0();
+
+    	return SharedForeignPtr<inmem::SnapshotMetadata<TxnId>>(std::move(ptr));
     }
 
     void set_master(const TxnId& txn_id)
     {
-    	LockGuardT lock_guard(mutex_);
+    	submit_to_master([=]{
+    		return store_mutex_.write_lock().then([=]{
+    			auto iter = snapshot_map_.find(txn_id);
+    			if (iter != snapshot_map_.end())
+    			{
+    				auto history_node = iter->second;
 
-        auto iter = snapshot_map_.find(txn_id);
-        if (iter != snapshot_map_.end())
-        {
-            auto history_node = iter->second;
+    				if (history_node->is_committed())
+    				{
+    					master_ = iter->second;
+    				}
+    				else if (history_node->is_data_locked())
+    				{
+    					master_ = iter->second;
+    				}
+    				else if (history_node->is_dropped())
+    				{
+    					throw Exception(MA_SRC, SBuf() << "Snapshot " << txn_id << " has been dropped");
+    				}
+    				else {
+    					throw Exception(MA_SRC, SBuf() << "Snapshot " << txn_id << " hasn't been committed yet");
+    				}
 
-            SnapshotLockGuardT snapshot_lock_guard(history_node->snapshot_mutex());
-
-            if (history_node->is_committed())
-            {
-                master_ = iter->second;
-            }
-            else if (history_node->is_data_locked())
-            {
-            	master_ = iter->second;
-            }
-            else if (history_node->is_dropped())
-            {
-                throw Exception(MA_SRC, SBuf() << "Snapshot " << txn_id << " has been dropped");
-            }
-            else {
-                throw Exception(MA_SRC, SBuf() << "Snapshot " << txn_id << " hasn't been committed yet");
-            }
-        }
-        else {
-            throw Exception(MA_SRC, SBuf() << "Snapshot " << txn_id << " is not known in this allocator");
-        }
+    				return ::now();
+    			}
+    			else {
+    				throw Exception(MA_SRC, SBuf() << "Snapshot " << txn_id << " is not known in this allocator");
+    			}
+    		}).finally([=]{
+    			store_mutex_.write_unlock();
+    		});
+    	}).get0();
     }
 
     void set_branch(StringRef name, const TxnId& txn_id)
     {
-    	LockGuardT lock_guard(mutex_);
+    	submit_to_master([=]{
+    	    return store_mutex_.write_lock().then([=]{
+    	        auto iter = snapshot_map_.find(txn_id);
+    	        if (iter != snapshot_map_.end())
+    	        {
+    	            auto history_node = iter->second;
 
-        auto iter = snapshot_map_.find(txn_id);
-        if (iter != snapshot_map_.end())
-        {
-            auto history_node = iter->second;
+    	        	if (history_node->is_committed())
+    	            {
+    	                named_branches_[name] = history_node;
+    	            }
+    	        	else if (history_node->is_data_locked())
+    	        	{
+    	        		named_branches_[name] = history_node;
+    	        	}
+    	            else {
+    	                throw Exception(MA_SRC, SBuf() << "Snapshot " << txn_id << " hasn't been committed yet");
+    	            }
 
-            SnapshotLockGuardT snapshot_lock_guard(history_node->snapshot_mutex());
-
-        	if (history_node->is_committed())
-            {
-                named_branches_[name] = history_node;
-            }
-        	else if (history_node->is_data_locked())
-        	{
-        		named_branches_[name] = history_node;
-        	}
-            else {
-                throw Exception(MA_SRC, SBuf() << "Snapshot " << txn_id << " hasn't been committed yet");
-            }
-        }
-        else {
-            throw Exception(MA_SRC, SBuf()<<"Snapshot " << txn_id << " is not known in this allocator");
-        }
+    	        	return ::now();
+    	        }
+    	        else {
+    	            throw Exception(MA_SRC, SBuf()<<"Snapshot " << txn_id << " is not known in this allocator");
+    	        }
+    	    });
+    	}).get0();
     }
 
     ContainerMetadataRepository* getMetadata() const
@@ -883,72 +852,94 @@ public:
 
     virtual void walkContainers(ContainerWalker* walker, const char* allocator_descr = nullptr)
     {
-    	this->build_snapshot_labels_metadata();
+    	DUMBO_CHECK_THREAD_ACCESS();
 
-    	LockGuardT lock_guard(mutex_);
-
-        walker->beginAllocator("PersistentInMemAllocator", allocator_descr);
-
-        walk_containers(history_tree_, walker);
-
-        walker->endAllocator();
-
-        snapshot_labels_metadata().clear();
+    	walkContainers0(walker, allocator_descr);
     }
 
+private:
+    void walkContainers0(ContainerWalker* walker, const char* allocator_descr = nullptr)
+    {
+    	store_mutex_.write_lock().then([=]{
+    		auto snapshot_labels_metadata = this->build_snapshot_labels_metadata();
+
+    		walker->beginAllocator("PersistentInMemAllocator", allocator_descr);
+
+    		walk_containers(history_tree_, walker, snapshot_labels_metadata);
+
+    		walker->endAllocator();
+    	}).get0();
+    }
+
+public:
     virtual void store(const char* dump_file)
     {
+    	DUMBO_CHECK_THREAD_ACCESS();
+
     	auto ff = open_file_dma(dump_file, open_flags::create | open_flags::truncate | open_flags::wo).get0();
 
     	auto stream = ::dumbo::v1::write(ff);
-    	store(stream);
+    	store0(stream);
 
     	stream->close().get();
     }
 
+    virtual void store(TypedAsyncOutputStreamPtr output) {
 
-    virtual void store(TypedAsyncOutputStreamPtr output)
-    {
-    	//std::lock(mutex_, store_mutex_);
+    	DUMBO_CHECK_THREAD_ACCESS();
 
-    	//LockGuardT lock_guard2(mutex_, std::adopt_lock);
-    	//StoreLockGuardT lock_guard1(store_mutex_, std::adopt_lock);
-
-    	active_snapshots_.wait(0);
-
-    	do_pack(history_tree_);
-
-        records_ = 0;
-
-        char signature[12] = "MEMORIA";
-        for (size_t c = 7; c < sizeof(signature); c++) signature[c] = 0;
-
-        output->write(signature, 0, sizeof(signature)).get();
-
-        std::cout << "Header\n";
-
-        write_metadata(output);
-
-        RCPageSet stored_pages;
-
-        walk_version_tree(history_tree_, [&](const HistoryNode* history_tree_node) {
-            write_history_node(output, history_tree_node, stored_pages);
-        });
-
-        Checksum checksum;
-        checksum.records() = records_;
-
-        write(output, checksum);
-
-        output->flush().get();
+    	store0(output);
     }
+
+private:
+    void store0(TypedAsyncOutputStreamPtr output)
+    {
+    	store_mutex_.write_lock().then([=]{
+    		return active_snapshots_.wait().then([=]{
+
+    			do_pack(history_tree_);
+
+    			records_ = 0;
+
+    			char signature[12] = "MEMORIA";
+    			for (size_t c = 7; c < sizeof(signature); c++) signature[c] = 0;
+
+    			output->write(signature, 0, sizeof(signature)).get();
+
+    			std::cout << "Header\n";
+
+    			write_metadata(output);
+
+    			RCPageSet stored_pages;
+
+    			walk_version_tree(history_tree_, [&](const HistoryNode* history_tree_node) {
+    				write_history_node(output, history_tree_node, stored_pages);
+    			});
+
+    			Checksum checksum;
+    			checksum.records() = records_;
+
+    			write(output, checksum);
+
+    			output->flush().get0();
+    		});
+    	}).finally([=]{
+    		store_mutex_.write_unlock();
+    		return ::now();
+    	})
+		.get0();
+    }
+public:
+
 
     void dump(const char* path)
     {
-        using Walker = DumboFSDumpContainerWalker<Page>;
+    	submit_async_to_master([=]{
+            using Walker = DumboFSDumpContainerWalker<Page>;
 
-        Walker walker(this->getMetadata(), path);
-        this->walkContainers(&walker);
+            Walker walker(this->getMetadata(), path);
+            this->walkContainers0(&walker);
+    	}).get0();
     }
 
     static std::shared_ptr<MyType> load(const char* file)
@@ -965,7 +956,7 @@ public:
 
     static std::shared_ptr<MyType> load(TypedAsyncInputStreamPtr input)
     {
-        MyType* allocator = new MyType(0);
+    	MyType* allocator = new MyType(0);
 
         char signature[12];
 
@@ -1103,16 +1094,18 @@ public:
 
         // Delete temporary buffers
 
+        Int cpu_id = allocator->cpu_id();
+
         for (auto& entry: ptree_node_map)
         {
             auto buffer = entry.second.first;
 
             if (buffer->is_leaf())
             {
-                static_cast<LeafNodeBufferT*>(buffer)->del();
+                static_cast<LeafNodeBufferT*>(buffer)->del(cpu_id);
             }
             else {
-                static_cast<BranchNodeBufferT*>(buffer)->del();
+                static_cast<BranchNodeBufferT*>(buffer)->del(cpu_id);
             }
         }
 
@@ -1131,33 +1124,38 @@ public:
 private:
 
     template <typename Fn>
-    auto do_here_or_there(Fn&& fn)
+    auto submit_to_master(Fn&& fn) const
+	{
+    	return smp::submit_to(master_cpu_id_, std::forward<Fn>(fn));
+    }
+
+    template <typename Fn>
+    future<> submit_async_to_master(Fn&& fn) const
+	{
+    	return smp::submit_to(master_cpu_id_, [&, fn = std::forward<Fn>(fn)]{
+    		if (seastar::thread::running_in_thread()) {
+    			fn();
+    			return ::now();
+    		}
+    		else {
+    			return seastar::async(fn);
+    		}
+    	});
+	}
+
+
+//    const auto& snapshot_labels_metadata() const {
+//    	return snapshot_labels_metadata_;
+//    }
+//
+//    auto& snapshot_labels_metadata() {
+//    	return snapshot_labels_metadata_;
+//    }
+
+    const char* get_labels_for(const HistoryNode* node, const ReverseBranchMap& snapshot_labels_metadata) const
     {
-    	Int cpu_id = this->cpu_id();
-
-    	if (engine().cpu_id() == cpu_id)
-    	{
-    		// do here
-    		return fn();
-    	}
-    	else {
-    		// do there
-    		return smp::submit_to(cpu_id, std::forward<Fn>(fn));
-    	}
-    }
-
-    const auto& snapshot_labels_metadata() const {
-    	return snapshot_labels_metadata_;
-    }
-
-    auto& snapshot_labels_metadata() {
-    	return snapshot_labels_metadata_;
-    }
-
-    const char* get_labels_for(const HistoryNode* node) const
-    {
-    	auto labels = snapshot_labels_metadata_.find(node);
-    	if (labels != snapshot_labels_metadata_.end())
+    	auto labels = snapshot_labels_metadata.find(node);
+    	if (labels != snapshot_labels_metadata.end())
     	{
     		return labels->second.c_str();
     	}
@@ -1166,9 +1164,9 @@ private:
     	}
     }
 
-    void build_snapshot_labels_metadata()
+    ReverseBranchMap build_snapshot_labels_metadata()
     {
-    	snapshot_labels_metadata_.clear();
+    	ReverseBranchMap snapshot_labels_metadata;
 
     	walk_version_tree(history_tree_, [&, this](const HistoryNode* node) {
     		std::vector<String> labels;
@@ -1209,9 +1207,11 @@ private:
     				labels_str << s;
     			}
 
-    			snapshot_labels_metadata_[node] = labels_str.str();
+    			snapshot_labels_metadata[node] = labels_str.str();
     		}
     	});
+
+    	return snapshot_labels_metadata;
     }
 
 
@@ -1367,7 +1367,7 @@ private:
 
         						if (map.find(page->uuid()) == map.end())
         						{
-        							map[page->uuid()] = new RCPagePtr(page, references);
+        							map[page->uuid()] = new RCPagePtr(page, references, master_cpu_id_);
         						}
         						else {
         							throw Exception(MA_SRC, SBuf() << "Page " << page->uuid() << " was already registered");
@@ -1518,14 +1518,12 @@ private:
         }
     }
 
-    void walk_containers(HistoryNode* node, ContainerWalker* walker)
+    void walk_containers(HistoryNode* node, ContainerWalker* walker, const ReverseBranchMap& snapshot_labels_metadata)
     {
-    	SnapshotLockGuardT snapshot_lock_guard(node->snapshot_mutex());
-
         if (node->is_committed())
         {
-            SnapshotT txn(node, this);
-            txn.walkContainers(walker, get_labels_for(node));
+            SnapshotT txn(node, this, engine().cpu_id());
+            txn.walkContainers(walker, get_labels_for(node, snapshot_labels_metadata));
         }
 
         if (node->children().size())
@@ -1533,7 +1531,7 @@ private:
             walker->beginSnapshotSet("Branches", node->children().size());
             for (auto child: node->children())
             {
-                walk_containers(child, walker);
+                walk_containers(child, walker, snapshot_labels_metadata);
             }
             walker->endSnapshotSet();
         }
@@ -1723,8 +1721,6 @@ private:
 
     void forget_snapshot(HistoryNode* history_node)
     {
-    	LockGuardT lock_guard(mutex_);
-
         snapshot_map_.erase(history_node->txn_id());
 
         history_node->remove_from_parent();
@@ -1815,8 +1811,6 @@ private:
 
         bool remove_node = false;
         {
-        	SnapshotLockGuardT lock_guard(node->snapshot_mutex());
-
         	if (node->root() == nullptr && node->references() == 0 && branches.find(node) == branches.end())
         	{
         		remove_node = true;
@@ -1846,6 +1840,22 @@ private:
         }
     }
 
+    void checkThreadAccess(const char* source, unsigned int line, const char* function) const
+    {
+    	Int cpu_id = engine().cpu_id();
+
+    	if (master_cpu_id_ != cpu_id)
+    	{
+    		__assert_fail(
+    				(SBuf()
+    						<< "SeastarInMemAllocator thread access assertion failed. Master thread: " << master_cpu_id_
+							<< "Caller thread: " << cpu_id).str().c_str(),
+					source,
+					line,
+					function
+			);
+    	}
+    }
 };
 
 

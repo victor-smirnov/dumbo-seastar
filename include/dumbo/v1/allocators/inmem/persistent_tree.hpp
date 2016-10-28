@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <dumbo/v1/tools/memory.hpp>
+
 #include <memoria/v1/core/types/types.hpp>
 
 #include <dumbo/v1/allocators/inmem/persistent_tree_node.hpp>
@@ -54,16 +56,15 @@ public:
     using ConstIterator = PersistentTreeConstIterator<BranchNodeT, LeafNodeT>;
     using Path          = typename Iterator::Path;
 
-    using MutexT		= typename std::remove_reference<decltype(std::declval<RootProvider>().snapshot_mutex())>::type;
-    using LockGuardT	= typename std::lock_guard<MutexT>;
-
 private:
     RootProvider* root_provider_;
+    Int owner_cpu_id_;
 
 public:
 
-    PersistentTree(RootProvider* root_provider):
-        root_provider_(root_provider)
+    PersistentTree(RootProvider* root_provider, Int owner_cpu_id):
+        root_provider_(root_provider),
+		owner_cpu_id_(owner_cpu_id)
     {
         if (root_provider_->is_active())
         {
@@ -77,8 +78,6 @@ public:
 
                 while (root_provider)
                 {
-                	LockGuardT guard(root_provider_->snapshot_mutex());
-
                     if (!root_provider->is_dropped())
                     {
                         target = root_provider;
@@ -103,6 +102,8 @@ public:
             }
         }
     }
+
+    Int owner_cpu_id() const {return owner_cpu_id_;}
 
 
     NodeBasePtr root() {
@@ -303,7 +304,7 @@ protected:
 
                 fn(leaf_node);
 
-                leaf_node->del();
+                leaf_node->del(owner_cpu_id());
             }
             else {
                 auto branch_node = to_branch_node(node);
@@ -315,7 +316,7 @@ protected:
                     delete_tree(child, fn);
                 }
 
-                branch_node->del();
+                branch_node->del(owner_cpu_id());
             }
         }
     }
@@ -795,7 +796,7 @@ protected:
     {
         ensure_node_budget(1);
 
-        return new BranchNodeT(txn_id, root_provider_->new_node_id());
+        return new BranchNodeT(txn_id, root_provider_->new_node_id(), owner_cpu_id());
     }
 
     BranchNodeT* clone_branch_node(BranchNodeT* node, const TxnId& txn_id)
@@ -811,7 +812,7 @@ protected:
     {
         ensure_node_budget(1);
 
-        return new LeafNodeT(txn_id, root_provider_->new_node_id());
+        return new LeafNodeT(txn_id, root_provider_->new_node_id(), owner_cpu_id());
     }
 
     LeafNodeT* clone_leaf_node(LeafNodeT* node, const TxnId& txn_id)
@@ -833,7 +834,7 @@ protected:
 
         auto node_id = root_provider_->new_node_id();
 
-        NodeT* new_node = new NodeT(txn_id, node_id);
+        NodeT* new_node = new NodeT(txn_id, node_id, owner_cpu_id());
 
         CopyBuffer(node, new_node, 1);
 
@@ -848,10 +849,10 @@ protected:
     {
         if (node->is_leaf())
         {
-            to_leaf_node(node)->del();
+            to_leaf_node(node)->del(owner_cpu_id());
         }
         else {
-            to_branch_node(node)->del();
+            to_branch_node(node)->del(owner_cpu_id());
         }
     }
 

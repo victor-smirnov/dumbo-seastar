@@ -24,13 +24,18 @@
 
 #include "core/shared_ptr_debug_helper.hh"
 #include "core/reactor.hh"
+#include "core/thread.hh"
+
+#include "util/is_smart_ptr.hh"
+#include "util/indirect.hh"
+
+
 
 #include <utility>
 #include <type_traits>
 #include <functional>
 #include <iostream>
-#include "util/is_smart_ptr.hh"
-#include "util/indirect.hh"
+
 
 
 namespace dumbo {
@@ -512,14 +517,19 @@ public:
     ~shared_ptr() {
         if (_b && !--_b->count)
         {
-        	if (_b->cpu_id() == engine().cpu_id()) {
-        		delete _b;
-        	}
-        	else {
-        		smp::submit_to(_b->cpu_id(), [=]{
+        	assert(seastar::thread::running_in_thread() && "dumbo::shared_ptr object destruction must be in a Seastar thread");
+
+        	smp::submit_to(_b->cpu_id(), [=]{
+        		if (seastar::thread::running_in_thread()) {
         			delete _b;
-            	});
-        	}
+        			return ::now();
+        		}
+        		else {
+        			return seastar::async([=]{
+        				delete _b;
+        			});
+        		}
+        	}).get0();
         }
     }
     shared_ptr& operator=(const shared_ptr& x) noexcept {
@@ -652,6 +662,15 @@ make_shared_holder(A&&... a) {
     using helper = shared_ptr_make_helper<T, std::is_base_of<shared_ptr_count_base, T>::value>;
     return helper::make_holder(std::forward<A>(a)...);
 }
+
+template <typename T, typename... Args>
+future<shared_ptr_holder<T>> make_shared_holder_now(Args&&... args) {
+	return make_ready_future<shared_ptr_holder<T>>(
+		make_shared_holder<T>(std::forward<Args>(args)...)
+	);
+}
+
+
 
 template <typename T>
 inline
@@ -849,6 +868,9 @@ using shared_ptr_equal_by_value = indirect_equal_to<shared_ptr<T>>;
 
 template<typename T>
 using shared_ptr_value_hash = indirect_hash<shared_ptr<T>>;
+
+
+
 
 }}}
 

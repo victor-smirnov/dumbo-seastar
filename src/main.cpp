@@ -60,6 +60,12 @@ int main(int argc, char** argv)
 				auto alloc = SeastarInMemAllocator<>::create();
 				auto snp = alloc->master()->branch();
 
+				snp->parent();
+				snp->has_parent();
+				snp->describe();
+				snp->metadata();
+				alloc->describe_master();
+
 				auto map = create<Set<Key>>(snp, UUID::parse("b1197537-12eb-4dc7-811b-ee0491720fbc"));
 
 				for (int c = 0; c < 10000; c++)
@@ -89,6 +95,9 @@ int main(int argc, char** argv)
 					std::cout << i1->key() << "\n";
 					i1->next();
 				}
+
+				snp1->dump("snp1.dump");
+
 			}).handle_exception([](auto eptr){
 				try {
 					std::rethrow_exception(eptr);

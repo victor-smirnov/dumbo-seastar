@@ -50,7 +50,7 @@
 
 namespace dumbo {
 namespace v1 {
-namespace dumbo2 {
+namespace ns {
 
 #ifndef DEBUG_SHARED_PTR
 using shared_ptr_counter_type = long;
@@ -706,15 +706,15 @@ using shared_ptr_value_hash = indirect_hash<shared_ptr<T>>;
 namespace std {
 
 template <typename T>
-struct hash<dumbo::v1::dumbo2::lw_shared_ptr<T>> : private hash<T*> {
-    size_t operator()(const dumbo::v1::dumbo2::lw_shared_ptr<T>& p) const {
+struct hash<dumbo::v1::ns::lw_shared_ptr<T>> : private hash<T*> {
+    size_t operator()(const dumbo::v1::ns::lw_shared_ptr<T>& p) const {
         return hash<T*>::operator()(p.get());
     }
 };
 
 template <typename T>
-struct hash<dumbo::v1::dumbo2::shared_ptr<T>> : private hash<T*> {
-    size_t operator()(const dumbo::v1::dumbo2::shared_ptr<T>& p) const {
+struct hash<dumbo::v1::ns::shared_ptr<T>> : private hash<T*> {
+    size_t operator()(const dumbo::v1::ns::shared_ptr<T>& p) const {
         return hash<T*>::operator()(p.get());
     }
 };
@@ -722,9 +722,9 @@ struct hash<dumbo::v1::dumbo2::shared_ptr<T>> : private hash<T*> {
 }
 
 template<typename T>
-struct is_smart_ptr<dumbo::v1::dumbo2::shared_ptr<T>> : std::true_type {};
+struct is_smart_ptr<dumbo::v1::ns::shared_ptr<T>> : std::true_type {};
 
 template<typename T>
-struct is_smart_ptr<dumbo::v1::dumbo2::lw_shared_ptr<T>> : std::true_type {};
+struct is_smart_ptr<dumbo::v1::ns::lw_shared_ptr<T>> : std::true_type {};
 
 

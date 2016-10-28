@@ -92,6 +92,8 @@ private:
 
     Int size_ = 0;
 
+    Int cpu_id_;
+
 protected:
     BigInt refs_;
     mutable MutexT mutex_;
@@ -106,15 +108,18 @@ private:
 public:
     NodeBase() {}
 
-    NodeBase(const TxnId& txn_id, const NodeId& node_id, NodeType node_type):
+    NodeBase(const TxnId& txn_id, const NodeId& node_id, NodeType node_type, Int cpu_id):
         node_type_(node_type),
         node_id_(node_id),
         txn_id_(txn_id),
-		refs_(0)
+		refs_(0),
+		cpu_id_(cpu_id)
     {}
 
     MutexT& mutex() {return mutex_;}
     MutexT& mutex() const {return mutex_;}
+
+    Int cpu_id() const {return cpu_id_;}
 
     void lock() {
     	mutex_.lock();
@@ -376,6 +381,7 @@ public:
         out<<"NodeId: "<<node_id_<<endl;
         out<<"TxnId: "<<txn_id_<<endl;
         out<<"Refs: "<<refs_<<endl;
+        out<<"cpuId: "<<cpu_id_<<endl;
 
         out<<"Index: "<<endl;
 
@@ -509,8 +515,8 @@ public:
 
     Node() {}
 
-    Node(const TxnId& txn_id, const NodeId& node_id, NodeType node_type):
-        Base(txn_id, node_id, node_type)
+    Node(const TxnId& txn_id, const NodeId& node_id, NodeType node_type, Int cpu_id):
+        Base(txn_id, node_id, node_type, cpu_id)
     {}
 
     const Data& data(Int idx) const {
@@ -620,15 +626,22 @@ public:
 
     BranchNode() {}
 
-    BranchNode(const TxnId& txn_id, const NodeId& node_id):
-        Base(txn_id, node_id, NodeType::BRANCH)
+    BranchNode(const TxnId& txn_id, const NodeId& node_id, Int cpu_id):
+        Base(txn_id, node_id, NodeType::BRANCH, cpu_id)
     {}
 
     ~BranchNode() {}
 
 
-    void del() const {
-        delete this;
+    void del(Int owner_cpu_id) const
+    {
+    	Int cpu_id = this->cpu_id();
+    	if (cpu_id == owner_cpu_id) {
+    		delete this;
+    	}
+    	else {
+    		delete_on(cpu_id, this);
+    	}
     }
 
     NodeBaseT* find_child(const Key& key) const
@@ -698,16 +711,23 @@ public:
     using Value = Value_;
 
     LeafNode() {}
-    LeafNode(const TxnId& txn_id, const NodeId& node_id):
-        Base(txn_id, node_id, NodeType::LEAF)
+    LeafNode(const TxnId& txn_id, const NodeId& node_id, Int cpu_id):
+        Base(txn_id, node_id, NodeType::LEAF, cpu_id)
     {}
 
 
     ~LeafNode() {}
 
 
-    void del() const {
-        delete this;
+    void del(Int owner_cpu_id) const
+    {
+    	Int cpu_id = this->cpu_id();
+    	if (cpu_id == owner_cpu_id) {
+    		delete this;
+    	}
+    	else {
+    		delete_on(cpu_id, this);
+    	}
     }
 
     Int find(const Key& key) const

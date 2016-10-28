@@ -33,36 +33,36 @@ class RecursiveMutex {
 public:
 	RecursiveMutex(): owner_(free_marker_){}
 
-	void lock() {}
+	void lock1() {}
 
-	void lock1()
+	void lock()
 	{
 		auto current_id = std::this_thread::get_id();
 
 		if(owner_ != current_id)
 		{
-			size_t cnt = 0;
+//			size_t cnt = 0;
 			auto id = free_marker_;
 
 			while(!owner_.compare_exchange_weak(id, current_id, std::memory_order_acquire, std::memory_order_relaxed))
 			{
 		    	id = free_marker_;
 
-		    	cnt++;
-		    	if (dumbo_unlikely(cnt >= 100))
-		    	{
-		    		cnt = 0;
-		    		seastar::thread::yield();
-		    	}
+//		    	cnt++;
+//		    	if (dumbo_unlikely(cnt >= 100))
+//		    	{
+//		    		cnt = 0;
+//		    		seastar::thread::yield();
+//		    	}
 		    }
 		}
 
 		locks++;
 	}
 
-	bool try_lock() {return true;}
+	bool try_lock1() {return true;}
 
-	bool try_lock1()
+	bool try_lock()
 	{
 		auto current_id = std::this_thread::get_id();
 
@@ -75,9 +75,9 @@ public:
 		return false;
 	}
 
-	void unlock() {}
+	void unlock1() {}
 
-	void unlock1()
+	void unlock()
 	{
 	    if(--locks == 0)
 	    {
